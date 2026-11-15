@@ -1,7 +1,7 @@
 // Command audiorelay relays the audio track of an upstream live stream to a
 // low-bitrate Ogg Opus HTTP endpoint.
 //
-// Skeleton status: the CLI wiring is in place, but config parsing, the ffmpeg
+// Skeleton status: command-line configuration is implemented, but the ffmpeg
 // pipeline and the supervision loop are still stubs. See docs/architecture.md
 // for the intended shape of the program.
 package main
@@ -21,6 +21,10 @@ import (
 func main() {
 	cfg, err := config.Parse(os.Args[1:])
 	if err != nil {
+		if config.IsHelp(err) {
+			config.Usage(os.Stdout)
+			return
+		}
 		log.Fatalf("audiorelay: %v", err)
 	}
 

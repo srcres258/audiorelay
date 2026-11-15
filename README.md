@@ -4,9 +4,9 @@ Lightweight live audio relay: pulls an upstream live stream (typically HLS),
 extracts its audio, transcodes it to low-bitrate Opus, and publishes it as an
 Ogg Opus HTTP stream for mobile clients.
 
-Current state: **skeleton**. The package layout, interfaces and Nix build are
-in place; config parsing, the ffmpeg pipeline and the supervision loop are
-stubs that return `not implemented`.
+Current state: **partial skeleton**. Command-line configuration parsing and
+validation are implemented; the ffmpeg pipeline and the supervision loop are
+still stubs that return `not implemented`.
 
 ## Design target
 
@@ -28,7 +28,7 @@ planned extensions.
 | Path | Purpose |
 |---|---|
 | `cmd/audiorelay/` | CLI entry point, wiring only |
-| `internal/config/` | configuration types and parsing |
+| `internal/config/` | configuration types, parsing, validation and tests |
 | `internal/pipeline/` | media plane boundary + ffmpeg backend (stub) |
 | `internal/relay/` | control plane: supervision loop (stub) |
 | `nix/package.nix` | Go package build, ffmpeg wrapped onto `PATH` |

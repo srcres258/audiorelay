@@ -2,6 +2,8 @@ package config
 
 import "errors"
 
-// ErrNotImplemented is returned by the scaffolding stubs. Remove it once the
-// corresponding functions have real implementations.
-var ErrNotImplemented = errors.New("config: not implemented")
+// ErrRequired indicates that a required configuration value was omitted.
+var ErrRequired = errors.New("value is required")
+
+// ErrInvalid indicates that a configuration value is malformed or unsupported.
+var ErrInvalid = errors.New("invalid configuration")
