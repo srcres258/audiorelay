@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Development-only Icecast configuration for audiorelay.
+
+  - Plain HTTP, TCP port 8000, IPv6 listening socket.
+  - Passwords are placeholders. Never reuse these values outside a local
+    test environment.
+  - webroot/adminroot are intentionally omitted. The nixpkgs build defaults
+    them to a non-existent /usr/local/icecast path, so GET / returns 404.
+    That is cosmetic: the audio mountpoint below still works. Point them at
+    ${pkgs.icecast}/share/icecast/{web,admin} if you want the status page.
+  - Icecast warns when <hostname> is localhost and when this file is
+    world-readable. Both are expected for a development config.
+-->
+<icecast>
+  <location>audiorelay development</location>
+  <admin>dev@localhost</admin>
+
+  <limits>
+    <clients>20</clients>
+    <sources>2</sources>
+    <queue-size>524288</queue-size>
+    <client-timeout>30</client-timeout>
+    <header-timeout>15</header-timeout>
+    <source-timeout>10</source-timeout>
+    <burst-on-connect>1</burst-on-connect>
+    <burst-size>65535</burst-size>
+  </limits>
+
+  <authentication>
+    <!-- TODO: move to systemd credentials / environment for anything real. -->
+    <source-password>change-me-source</source-password>
+    <relay-password>change-me-relay</relay-password>
+    <admin-user>admin</admin-user>
+    <admin-password>change-me-admin</admin-password>
+  </authentication>
+
+  <hostname>localhost</hostname>
+
+  <listen-socket>
+    <port>8000</port>
+    <!-- "::" listens on IPv6; 2.5 removed the old <ipv6> flag and uses the
+         system's IPV6_V6ONLY default, so this socket is usually dual-stack.
+         Verify with `ss -lntp | grep 8000`. -->
+    <bind-address>::</bind-address>
+  </listen-socket>
+
+  <paths>
+    <logdir>./var/log/icecast</logdir>
+    <alias source="/" destination="/status.xsl" />
+  </paths>
+
+  <logging>
+    <accesslog>access.log</accesslog>
+    <errorlog>error.log</errorlog>
+    <loglevel>information</loglevel>
+  </logging>
+
+  <!-- Allow browser-based players to fetch the stream cross-origin.
+       Syntax follows Icecast 2.5; 2.4 used name/value attributes. -->
+  <http-headers>
+    <header type="cors" name="Access-Control-Allow-Origin" />
+    <header type="cors" name="Access-Control-Allow-Headers" />
+    <header type="cors" name="Access-Control-Expose-Headers" />
+  </http-headers>
+</icecast>
