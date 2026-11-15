@@ -145,4 +145,3 @@ many systems.
 4. Background playback behaviour of candidate Android players with an
    unbounded Ogg Opus HTTP stream — needs measurement, not documentation
    reading.
-5. License and repository hosting, before the first publishable commit.

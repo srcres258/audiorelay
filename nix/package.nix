@@ -34,7 +34,7 @@ buildGoModule {
   meta = {
     description = "Lightweight live audio relay: upstream HLS to Ogg Opus";
     homepage = "https://github.com/srcres258/audiorelay";
-    license = lib.licenses.mit;
+    license = lib.licenses.bsd3;
     mainProgram = "audiorelay";
     platforms = lib.platforms.linux;
   };

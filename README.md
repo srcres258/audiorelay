@@ -64,4 +64,4 @@ Git checkout.
 
 ## License
 
-MIT (placeholder until a license file is added).
+BSD 3-Clause License. See [LICENSE.txt](LICENSE.txt).
