@@ -2,6 +2,5 @@ package relay
 
 import "errors"
 
-// ErrNotImplemented is returned by the scaffolding stubs. Remove it once the
-// supervision loop has a real implementation.
-var ErrNotImplemented = errors.New("relay: not implemented")
+// ErrNilBackend indicates that no pipeline backend was provided.
+var ErrNilBackend = errors.New("relay: nil pipeline backend")

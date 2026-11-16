@@ -8,38 +8,185 @@ package relay
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"time"
 
 	"github.com/srcres258/audiorelay/internal/config"
 	"github.com/srcres258/audiorelay/internal/pipeline"
 )
 
+const (
+	defaultRestartBackoff    = time.Second
+	defaultMaxRestartBackoff = 30 * time.Second
+	defaultStopTimeout       = 5 * time.Second
+)
+
+// restartPolicy controls the behaviour of the supervisor after a pipeline
+// stops unexpectedly. It is kept private so the public API remains small;
+// tests use newWithPolicy to avoid waiting for production backoff durations.
+type restartPolicy struct {
+	initialBackoff time.Duration
+	maxBackoff     time.Duration
+	stopTimeout    time.Duration
+}
+
+func defaultRestartPolicy() restartPolicy {
+	return restartPolicy{
+		initialBackoff: defaultRestartBackoff,
+		maxBackoff:     defaultMaxRestartBackoff,
+		stopTimeout:    defaultStopTimeout,
+	}
+}
+
 // Relay supervises one pipeline for one configured source/sink pair.
 type Relay struct {
 	cfg     config.Config
 	backend pipeline.Backend
+	policy  restartPolicy
 }
 
 // New validates cfg and returns a Relay that will build its pipeline from
 // backend when Run is called.
 func New(cfg config.Config, backend pipeline.Backend) (*Relay, error) {
-	// TODO: validate cfg here (or at the CLI boundary) and reject a nil
-	// backend.
-	_ = cfg
-	_ = backend
-	return nil, ErrNotImplemented
+	return newWithPolicy(cfg, backend, defaultRestartPolicy())
+}
+
+func newWithPolicy(cfg config.Config, backend pipeline.Backend, policy restartPolicy) (*Relay, error) {
+	if err := config.Validate(cfg); err != nil {
+		return nil, fmt.Errorf("validate relay configuration: %w", err)
+	}
+	if isNilBackend(backend) {
+		return nil, ErrNilBackend
+	}
+	if policy.initialBackoff <= 0 {
+		return nil, fmt.Errorf("initial restart backoff must be positive")
+	}
+	if policy.maxBackoff < policy.initialBackoff {
+		return nil, fmt.Errorf("maximum restart backoff must not be less than initial backoff")
+	}
+	if policy.stopTimeout <= 0 {
+		return nil, fmt.Errorf("stop timeout must be positive")
+	}
+
+	return &Relay{
+		cfg:     cfg,
+		backend: backend,
+		policy:  policy,
+	}, nil
 }
 
 // Run starts the pipeline and keeps it alive until ctx is cancelled.
 //
-// TODO: implement the supervision loop:
-//   - map cfg to pipeline.Spec;
-//   - start the pipeline and wait for it;
-//   - on unexpected exit, restart with capped exponential backoff;
-//   - on ctx cancellation, stop the pipeline and return nil.
-//
-// Restart policy, backoff bounds and logging are intentionally left as open
-// design points for the next iteration (see docs/architecture.md).
+// A backend construction, start, or wait failure is treated as a transient
+// pipeline failure. The supervisor retries with capped exponential backoff.
+// Cancelling ctx stops the current pipeline and returns nil.
 func (r *Relay) Run(ctx context.Context) error {
-	_ = ctx
-	return ErrNotImplemented
+	if ctx == nil {
+		return fmt.Errorf("relay context must not be nil")
+	}
+
+	spec := pipeline.Spec{
+		Input:      r.cfg.Input,
+		Output:     r.cfg.Output,
+		Bitrate:    r.cfg.Bitrate,
+		Channels:   r.cfg.Channels,
+		SampleRate: r.cfg.SampleRate,
+	}
+
+	backoff := r.policy.initialBackoff
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil
+		}
+
+		current, err := r.backend.New(spec)
+		if err == nil && isNilPipeline(current) {
+			current = nil
+			err = fmt.Errorf("backend returned a nil pipeline")
+		}
+		if err == nil {
+			err = current.Start(ctx)
+		}
+		if err == nil {
+			err = waitForPipeline(ctx, current)
+		}
+
+		if ctx.Err() != nil {
+			if current != nil {
+				_ = stopPipeline(current, r.policy.stopTimeout)
+			}
+			return nil
+		}
+
+		if err == nil {
+			err = fmt.Errorf("pipeline exited unexpectedly")
+		}
+
+		if err := waitForRestart(ctx, backoff); err != nil {
+			return nil
+		}
+		backoff = nextBackoff(backoff, r.policy.maxBackoff)
+	}
+}
+
+func waitForPipeline(ctx context.Context, current pipeline.Pipeline) error {
+	result := make(chan error, 1)
+	go func() {
+		result <- current.Wait()
+	}()
+
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func stopPipeline(current pipeline.Pipeline, timeout time.Duration) error {
+	stopCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return current.Stop(stopCtx)
+}
+
+func waitForRestart(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func nextBackoff(current, maximum time.Duration) time.Duration {
+	if current >= maximum/2 {
+		return maximum
+	}
+	return current * 2
+}
+
+func isNilBackend(backend pipeline.Backend) bool {
+	return isNilInterface(backend)
+}
+
+func isNilPipeline(current pipeline.Pipeline) bool {
+	return isNilInterface(current)
+}
+
+func isNilInterface(value any) bool {
+	if value == nil {
+		return true
+	}
+
+	reflected := reflect.ValueOf(value)
+	switch reflected.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return reflected.IsNil()
+	default:
+		return false
+	}
 }

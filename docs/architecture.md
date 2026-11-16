@@ -91,9 +91,11 @@ mapping, so the relay never inspects ffmpeg output directly.
 ### relay contract
 
 `Run(ctx)` owns the restart loop: map `Config` → `pipeline.Spec`, start, wait,
-and on unexpected exit restart with capped exponential backoff until `ctx` is
-cancelled. It returns `nil` on clean shutdown, so the CLI can distinguish
-operator-initiated stop from failure.
+and on backend construction, start, or unexpected exit retry with capped
+exponential backoff. The production defaults are a 1-second initial delay,
+a 30-second maximum delay, and a 5-second stop timeout. Cancellation stops the
+current pipeline and returns `nil`, so the CLI can distinguish operator-
+initiated stop from failure.
 
 ## Configuration surface (first version)
 
@@ -140,8 +142,9 @@ many systems.
 
 ## Open questions
 
-1. Restart semantics: fixed attempt cap, or unbounded with backoff and health
-   reporting? Does a persistent upstream 404 differ from a transient timeout?
+1. Whether to distinguish persistent upstream errors such as HTTP 404 from
+   transient failures such as timeouts; the current policy retries both with
+   the same capped backoff.
 2. Whether to keep Icecast long-term or migrate to a Go broadcast sink; the
    answer depends on measured listener counts and latency requirements.
 3. IPv6 only, or dual-stack? The demo targets ULA/link-local-free addresses;

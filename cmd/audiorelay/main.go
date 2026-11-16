@@ -1,9 +1,9 @@
 // Command audiorelay relays the audio track of an upstream live stream to a
 // low-bitrate Ogg Opus HTTP endpoint.
 //
-// Skeleton status: command-line configuration is implemented, but the ffmpeg
-// pipeline and the supervision loop are still stubs. See docs/architecture.md
-// for the intended shape of the program.
+// Skeleton status: command-line configuration and pipeline supervision are
+// implemented, but the ffmpeg backend is still a stub. See
+// docs/architecture.md for the intended shape of the program.
 package main
 
 import (

@@ -5,8 +5,9 @@ extracts its audio, transcodes it to low-bitrate Opus, and publishes it as an
 Ogg Opus HTTP stream for mobile clients.
 
 Current state: **partial skeleton**. Command-line configuration parsing and
-validation are implemented; the ffmpeg pipeline and the supervision loop are
-still stubs that return `not implemented`.
+validation, plus pipeline supervision with restart/backoff handling, are
+implemented; the ffmpeg pipeline backend is still a stub that returns `not
+implemented`.
 
 ## Design target
 
@@ -30,7 +31,7 @@ planned extensions.
 | `cmd/audiorelay/` | CLI entry point, wiring only |
 | `internal/config/` | configuration types, parsing, validation and tests |
 | `internal/pipeline/` | media plane boundary + ffmpeg backend (stub) |
-| `internal/relay/` | control plane: supervision loop (stub) |
+| `internal/relay/` | control plane: supervision, restart and backoff |
 | `nix/package.nix` | Go package build, ffmpeg wrapped onto `PATH` |
 | `examples/icecast.xml` | development Icecast configuration |
 | `docs/` | architecture notes |
@@ -58,7 +59,7 @@ Git checkout.
 ## Planned milestones
 
 1. MVP: ffmpeg + Icecast relaying one upstream HLS audio track.
-2. Go control plane: flag parsing, restart with backoff, structured logs.
+2. Go control plane: flag parsing and restart with backoff. Structured logs remain to be added.
 3. NixOS service module (`nix/module.nix`) and per-architecture verification.
 4. Optional: in-process media backend, native HTTP broadcast sink, multi-channel.
 
