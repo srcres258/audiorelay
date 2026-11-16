@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Go, Nix and end-to-end checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v30
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            auto-optimise-store = true
+
+      - name: Check Nix formatting
+        run: |
+          nix fmt
+          git diff --exit-code
+
+      - name: Check Go formatting
+        run: |
+          test -z "$(gofmt -l .)"
+
+      - name: Run Go tests, race detector and vet
+        run: |
+          nix develop --command bash -euo pipefail -c '
+            go test ./...
+            go test -race ./...
+            go vet ./...
+            go build ./...
+          '
+
+      - name: Run deterministic end-to-end smoke test
+        run: nix develop --command ./scripts/e2e-smoke.sh
+
+      - name: Check flake outputs
+        run: nix flake check
+
+      - name: Build Nix package
+        run: nix build

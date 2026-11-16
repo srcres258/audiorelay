@@ -24,7 +24,9 @@ upstream HLS ──► ffmpeg (demux / decode / Opus / Ogg) ──► Go Icecast
 - Wire format: `Opus → Ogg → HTTP/1.1 → TCP → IPv6`, 32 kbps stereo by default.
 
 See [docs/architecture.md](docs/architecture.md) for the reasoning and the
-planned extensions.
+planned extensions. GitHub Actions runs formatting, Go tests (including the
+race detector), vet, the deterministic smoke test, flake checks and the Nix
+package build on pushes and pull requests.
 
 ## Layout
 
@@ -37,6 +39,7 @@ planned extensions.
 | `nix/package.nix` | Go package build, ffmpeg wrapped onto `PATH` |
 | `examples/icecast.xml` | development Icecast configuration |
 | `scripts/e2e-smoke.sh` | deterministic local HLS → audiorelay → Icecast smoke test |
+| `.github/workflows/ci.yml` | GitHub Actions quality and integration checks |
 | `docs/` | architecture notes |
 
 ## Development
