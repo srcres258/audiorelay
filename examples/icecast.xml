@@ -23,7 +23,10 @@
     <client-timeout>30</client-timeout>
     <header-timeout>15</header-timeout>
     <source-timeout>10</source-timeout>
-    <burst-on-connect>1</burst-on-connect>
+    <!-- Icecast sends burst-size bytes from the existing stream to every new
+         listener. Keep this for normal startup latency; set it to 0 when
+         measuring steady-state bandwidth, otherwise each connection adds
+         roughly 64 KiB to the first read. -->
     <burst-size>65535</burst-size>
   </limits>
 

@@ -40,6 +40,7 @@
             ffmpeg
             icecast
             curl
+            python3
             pkg-config
           ];
 

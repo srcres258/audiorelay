@@ -138,6 +138,21 @@ many systems.
 - Low-power boards can run Icecast only, with transcoding on a stronger host,
   because the two are already separate processes.
 
+## Verification
+
+`scripts/e2e-smoke.sh` runs a deterministic local integration path:
+
+```text
+lavfi sine → AAC/HLS over local HTTP → audiorelay → Icecast → Ogg Opus capture
+```
+
+It uses temporary ports and directories, disables Icecast's connection burst
+only for the measurement, checks the OggS signature, probes Opus/stereo/48 kHz
+metadata, and verifies that the measured bitrate remains in a broad expected
+20–100 kbit/s range around the 32 kbit/s target. Unconstrained VBR is
+content-dependent, especially for synthetic test signals. A real broadcaster URL is useful for manual
+compatibility testing, but is intentionally not required for the smoke test.
+
 ## Deliberate non-goals for the demo
 
 - No web UI, database, accounts or multi-tenant auth.

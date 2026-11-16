@@ -35,16 +35,26 @@ planned extensions.
 | `internal/relay/` | control plane: supervision, restart and backoff |
 | `nix/package.nix` | Go package build, ffmpeg wrapped onto `PATH` |
 | `examples/icecast.xml` | development Icecast configuration |
+| `scripts/e2e-smoke.sh` | deterministic local HLS → audiorelay → Icecast smoke test |
 | `docs/` | architecture notes |
 
 ## Development
 
 ```sh
-nix develop          # Go, gopls, ffmpeg, icecast, curl
+nix develop          # Go, gopls, ffmpeg, icecast, curl, python3
 go build ./...
 go vet ./...
 go run ./cmd/audiorelay -h
+
+# Deterministic local end-to-end smoke test
+./scripts/e2e-smoke.sh
 ```
+
+The smoke test generates a local AAC/HLS source, starts a temporary Icecast
+instance, runs audiorelay, captures the Ogg Opus mount, and verifies OggS,
+Opus/stereo/48 kHz metadata and an expected bitrate range. It does not require
+an external broadcaster. Set `AUDIORELAY_BIN` to test an existing binary, or
+`AUDIORELAY_CAPTURE_SECONDS` to change the capture duration.
 
 Nix build and run:
 
