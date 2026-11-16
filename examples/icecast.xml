@@ -31,7 +31,9 @@
   </limits>
 
   <authentication>
-    <!-- TODO: move to systemd credentials / environment for anything real. -->
+    <!-- Development-only values. Production Icecast must obtain its
+         authentication secrets separately. Its source password must match the
+         secret supplied to audiorelay through -source-password-file. -->
     <source-password>change-me-source</source-password>
     <relay-password>change-me-relay</relay-password>
     <admin-user>admin</admin-user>

@@ -102,6 +102,7 @@ type ffmpegPipeline struct {
 	executable string
 	args       []string
 	logger     *slog.Logger
+	publish    publisher
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -110,6 +111,10 @@ type ffmpegPipeline struct {
 	started bool
 	waitErr error
 }
+
+// publisher sends ffmpeg's Ogg byte stream to the configured downstream sink.
+// producerDone is closed when ffmpeg closes the stream.
+type publisher func(ctx context.Context, stream io.ReadCloser, producerDone <-chan struct{}) error
 
 func newFFmpegWithExecutable(spec Spec, executable string) (Pipeline, error) {
 	return newFFmpegWithExecutableAndLogger(spec, executable, slog.Default())
@@ -125,12 +130,21 @@ func newFFmpegWithExecutableAndLogger(spec Spec, executable string, logger *slog
 	if logger == nil {
 		logger = slog.Default()
 	}
+	publish, err := newIcecastPublisher(spec.Output)
+	if err != nil {
+		return nil, err
+	}
 
+	return newFFmpegWithPublisher(executable, buildFFmpegArgs(spec), logger, publish), nil
+}
+
+func newFFmpegWithPublisher(executable string, args []string, logger *slog.Logger, publish publisher) *ffmpegPipeline {
 	return &ffmpegPipeline{
 		executable: executable,
-		args:       buildFFmpegArgs(spec),
+		args:       args,
 		logger:     logger,
-	}, nil
+		publish:    publish,
+	}
 }
 
 func (p *ffmpegPipeline) Start(ctx context.Context) error {
@@ -147,8 +161,11 @@ func (p *ffmpegPipeline) Start(ctx context.Context) error {
 
 	tail := &tailBuffer{max: stderrLimit}
 	stderr := &processStderr{tail: tail, logger: p.logger}
+	stdout, stdin := io.Pipe()
+	producerDone := make(chan struct{})
+	sourceDone := make(chan error, 1)
 	cmd := exec.CommandContext(ctx, p.executable, p.args...)
-	cmd.Stdout = io.Discard
+	cmd.Stdout = stdin
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ffmpeg: %w", err)
@@ -159,18 +176,37 @@ func (p *ffmpegPipeline) Start(ctx context.Context) error {
 	p.done = make(chan struct{})
 	p.started = true
 	p.logger.Info("ffmpeg process started", "pid", cmd.Process.Pid)
-	go p.collectWait(cmd, stderr)
+	go func() {
+		sourceDone <- p.publish(ctx, stdout, producerDone)
+	}()
+	go p.collectWait(cmd, stderr, stdin, producerDone, sourceDone)
 	return nil
 }
 
-func (p *ffmpegPipeline) collectWait(cmd *exec.Cmd, stderr *processStderr) {
-	err := cmd.Wait()
+func (p *ffmpegPipeline) collectWait(
+	cmd *exec.Cmd,
+	stderr *processStderr,
+	stdout *io.PipeWriter,
+	producerDone chan struct{},
+	sourceDone <-chan error,
+) {
+	processErr := cmd.Wait()
 	stderr.Flush()
+	_ = stdout.Close()
+	close(producerDone)
+	sourceErr := <-sourceDone
+
+	var err error
+	switch {
+	case sourceErr != nil:
+		err = fmt.Errorf("publish Ogg stream to Icecast: %w", sourceErr)
+	case processErr != nil:
+		err = formatProcessError(processErr, stderr.tail.String())
+	}
 	if err != nil {
-		err = formatProcessError(err, stderr.tail.String())
-		p.logger.Error("ffmpeg process exited", "pid", cmd.Process.Pid, "error", err)
+		p.logger.Error("ffmpeg pipeline exited", "pid", cmd.Process.Pid, "error", err)
 	} else {
-		p.logger.Info("ffmpeg process exited", "pid", cmd.Process.Pid)
+		p.logger.Info("ffmpeg pipeline exited", "pid", cmd.Process.Pid)
 	}
 
 	p.mu.Lock()
@@ -275,8 +311,7 @@ func buildFFmpegArgs(spec Spec) []string {
 		"-ac", strconv.Itoa(spec.Channels),
 		"-ar", strconv.Itoa(spec.SampleRate),
 		"-f", "ogg",
-		"-content_type", "audio/ogg",
-		spec.Output,
+		"pipe:1",
 	}
 }
 

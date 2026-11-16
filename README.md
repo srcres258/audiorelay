@@ -13,12 +13,13 @@ can be filtered with `-log-level`.
 ## Design target
 
 ```
-upstream HLS ──► ffmpeg (demux / decode / Opus encode / Ogg mux) ──► Icecast ──► client
-                        ▲                                              ▲
-                        └──────────── Go control plane ───────────────┘
+upstream HLS ──► ffmpeg (demux / decode / Opus / Ogg) ──► Go Icecast source ──► Icecast ──► client
+                        ▲                              ▲                              ▲
+                        └──────────────────────────────┴──── Go control plane ──────┘
 ```
 
-- Media plane: ffmpeg does all audio processing; Icecast does HTTP broadcast.
+- Media plane: ffmpeg does audio processing; Go publishes its Ogg stdout to
+  Icecast; Icecast does HTTP listener broadcast.
 - Control plane: Go validates configuration and supervises the pipeline.
 - Wire format: `Opus → Ogg → HTTP/1.1 → TCP → IPv6`, 32 kbps stereo by default.
 
@@ -62,6 +63,47 @@ Nix build and run:
 nix build            # ./result/bin/audiorelay
 nix run              # same binary via the flake app
 ```
+
+## NixOS service and credentials
+
+The flake exports `nixosModules.default` (also available as
+`nixosModules.audiorelay`). The module runs the relay as a dynamic systemd
+user and uses `LoadCredential` so the Icecast source password is neither in
+the Nix store nor in the service command line.
+
+```nix
+{
+  inputs.audiorelay.url = "github:srcres258/audiorelay";
+
+  outputs = { nixpkgs, audiorelay, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [
+        audiorelay.nixosModules.default
+        ({ ... }: {
+          services.audiorelay = {
+            enable = true;
+            input = "https://upstream.example/live.m3u8";
+            # Username only: do not put the password into this URL.
+            output = "icecast://source@[::1]:8000/tv.opus";
+            sourcePasswordFile = "/run/secrets/audiorelay-source-password";
+          };
+        })
+      ];
+    };
+  };
+}
+```
+
+`sourcePasswordFile` must be a **string** pointing to a runtime secret file
+managed by sops-nix, agenix, or an equivalent tool; do not use a Nix path
+literal or `builtins.toFile`, which would copy the secret into the store. The
+systemd manager must be able to read the original file. At start, systemd
+copies it into the service's private credential directory; audiorelay reads
+that copy through `-source-password-file`.
+
+The module only manages audiorelay's outbound connection. Configure and expose
+Icecast, including its firewall port, separately.
 
 Note: `nix build` only sees files tracked by Git (or, outside a Git
 repository, the whole directory tree). Track new sources before building in a

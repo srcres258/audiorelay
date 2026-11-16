@@ -26,8 +26,8 @@ Constraints that drive the design:
 └───────────────────────────────▲─────────────────────────────┘
                                 │ icecast:// source protocol
 ┌───────────────────────────────┴─────────────────────────────┐
-│ pipeline (media plane): ffmpeg                                │
-│   demux → decode audio → resample → libopus encode → Ogg mux  │
+│ pipeline (media plane): ffmpeg + Go Icecast source client     │
+│ demux → decode audio → resample → libopus encode → Ogg → PUT  │
 └───────────────────────────────▲─────────────────────────────┘
                                 │ process supervision, exit codes
 ┌───────────────────────────────┴─────────────────────────────┐
@@ -44,8 +44,9 @@ the later evolution cheap.
 A correct Ogg Opus live endpoint is not "pipe ffmpeg stdout to every socket".
 New listeners need `OpusHead`/`OpusTags`, must start on an Ogg page boundary,
 slow clients must not stall the encoder, and the buffer must stay bounded so
-latency does not creep. Icecast already implements this. The Go program stays a
-supervisor until there is a concrete reason to reimplement broadcast.
+latency does not creep. Icecast already implements this. Go only implements the
+single upstream Icecast source client; it does not reimplement listener fan-out
+or buffering.
 
 ### Wire format decision
 
@@ -89,10 +90,12 @@ idempotent and safe after exit. Cancelling the `Start` context is equivalent to
 mapping, so the relay never inspects ffmpeg output directly.
 
 The initial `FFmpegBackend` starts an `ffmpeg` executable found on `PATH`.
-It extracts the first audio stream, encodes it as Opus, muxes Ogg, and
-publishes to the configured sink URL. It keeps the last 64 KiB of stderr for
-process error reporting, sends an interrupt for normal shutdown, and falls
-back to killing the process when the stop context expires.
+It extracts the first audio stream, encodes it as Opus, and muxes Ogg to
+`pipe:1`. Go then uses HTTP PUT with Basic authentication to publish the bytes
+to the configured Icecast mount. This keeps the source password in Go memory
+rather than in ffmpeg's process arguments. The backend keeps the last 64 KiB
+of stderr for process error reporting, sends an interrupt for normal shutdown,
+and falls back to killing the process when the stop context expires.
 
 ### relay contract
 
@@ -118,13 +121,18 @@ initiated stop from failure.
 not restrict their schemes: choosing a supported upstream protocol and sink
 remains the responsibility of the selected pipeline backend.
 
-Later: config file (multiple channels) and environment/systemd credentials
-for passwords.
+Later: a configuration file for multiple channels.
 
-Known gap: the current CLI shape puts the Icecast source password in
-`argv`. Before any non-local deployment this must move to a file or systemd
-credential, not only for secrecy but because `ps` output is world-readable on
-many systems.
+### Credentials
+
+`-source-password-file` reads the Icecast source password from a file and
+inserts it into the sink URL only in process memory. The password must not be
+put in `-output`, which would expose it in `ps` output and shell history.
+
+The NixOS module maps `services.audiorelay.sourcePasswordFile` to systemd
+`LoadCredential=source-password:…`; it passes only the private credential-file
+path to audiorelay. The option is intentionally a string, not a Nix path, so a
+secret manager's runtime file is not copied to the Nix store.
 
 ## Nix packaging
 

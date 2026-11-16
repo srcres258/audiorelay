@@ -150,14 +150,29 @@ else
     RELAY_COMMAND=("$AUDIORELAY_BUILD")
 fi
 
+PASSWORD_FILE="$RUNTIME_DIR/source-password"
+printf '%s\n' 'change-me-source' >"$PASSWORD_FILE"
+chmod 600 "$PASSWORD_FILE"
+
 "${RELAY_COMMAND[@]}" \
     -input "http://127.0.0.1:$SOURCE_PORT/index.m3u8" \
-    -output "icecast://source:change-me-source@[::1]:$ICECAST_PORT/tv.opus" \
+    -output "icecast://source@[::1]:$ICECAST_PORT/tv.opus" \
+    -source-password-file "$PASSWORD_FILE" \
     -log-level debug >"$RUNTIME_DIR/relay.log" 2>&1 &
 RELAY_PID=$!
 
 MOUNT_URL="http://[::1]:$ICECAST_PORT/tv.opus"
 wait_for_url "$MOUNT_URL" || fail "audiorelay did not publish the Icecast mount"
+
+# The password file must never be transformed into an ffmpeg command-line
+# argument. The Go Icecast client owns authentication and ffmpeg only writes
+# Ogg bytes to pipe:1.
+for child in $(<"/proc/$RELAY_PID/task/$RELAY_PID/children"); do
+    command_line=$(tr '\0' ' ' <"/proc/$child/cmdline")
+    if [[ "$command_line" == *"change-me-source"* || "$command_line" == *"icecast://"* ]]; then
+        fail "ffmpeg command line exposes Icecast credentials: $command_line"
+    fi
+done
 
 CAPTURE="$RUNTIME_DIR/capture.ogg"
 CAPTURE_SECONDS=${AUDIORELAY_CAPTURE_SECONDS:-10}

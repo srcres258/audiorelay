@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -38,7 +39,8 @@ type Config struct {
 
 	// Output is the downstream sink URL. For the first version this is an
 	// Icecast source URL such as
-	// icecast://source:PASSWORD@[::1]:8000/tv.opus
+	// icecast://source@[::1]:8000/tv.opus. Use SourcePasswordFile rather
+	// than embedding a password in this URL.
 	Output string
 
 	// Bitrate is the Opus target bitrate in kilobits per second, such as
@@ -53,6 +55,10 @@ type Config struct {
 
 	// LogLevel controls structured log verbosity: debug, info, warn, or error.
 	LogLevel string
+
+	// SourcePasswordFile is an optional file whose contents are used as the
+	// password in Output. It keeps the secret out of the process command line.
+	SourcePasswordFile string
 }
 
 // Parse builds a Config from command-line arguments (without the program
@@ -69,6 +75,7 @@ func Parse(args []string) (Config, error) {
 	flags.IntVar(&c.Channels, "channels", DefaultChannels, "output audio channels (1 or 2)")
 	flags.IntVar(&c.SampleRate, "sample-rate", DefaultSampleRate, "output sample rate in Hz")
 	flags.StringVar(&c.LogLevel, "log-level", DefaultLogLevel, "log level: debug, info, warn, or error")
+	flags.StringVar(&c.SourcePasswordFile, "source-password-file", "", "file containing the output source password")
 
 	if err := flags.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parse flags: %w", err)
@@ -95,6 +102,8 @@ func Usage(w io.Writer) {
 	fmt.Fprintf(w, "  -channels COUNT     output audio channels, 1 or 2 (default %d)\n", DefaultChannels)
 	fmt.Fprintf(w, "  -sample-rate HZ     output sample rate in Hz (default %d)\n", DefaultSampleRate)
 	fmt.Fprintf(w, "  -log-level LEVEL    log level: debug, info, warn, or error (default %q)\n", DefaultLogLevel)
+	fmt.Fprintln(w, "  -source-password-file PATH")
+	fmt.Fprintln(w, "                      file containing the output source password")
 	fmt.Fprintln(w, "  -h, -help           show this help")
 }
 
@@ -120,6 +129,40 @@ func Validate(c Config) error {
 	}
 
 	return nil
+}
+
+// WithSourcePassword reads c.SourcePasswordFile, if configured, and returns a
+// copy whose Output URL contains the password. The secret is never passed as a
+// command-line argument. The output URL must already contain a source username
+// but must not contain a password of its own.
+func WithSourcePassword(c Config) (Config, error) {
+	if c.SourcePasswordFile == "" {
+		return c, nil
+	}
+
+	contents, err := os.ReadFile(c.SourcePasswordFile)
+	if err != nil {
+		return Config{}, fmt.Errorf("read source password file: %w", err)
+	}
+	password := strings.TrimRight(string(contents), "\r\n")
+	if password == "" {
+		return Config{}, fmt.Errorf("source password file: %w", ErrRequired)
+	}
+
+	output, err := url.Parse(c.Output)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse output URL: %w", err)
+	}
+	if output.User == nil || output.User.Username() == "" {
+		return Config{}, fmt.Errorf("output: %w: source-password-file requires a username", ErrInvalid)
+	}
+	if _, set := output.User.Password(); set {
+		return Config{}, fmt.Errorf("output: %w: password must not be set when source-password-file is used", ErrInvalid)
+	}
+
+	output.User = url.UserPassword(output.User.Username(), password)
+	c.Output = output.String()
+	return c, nil
 }
 
 func validateURL(name, value string) error {

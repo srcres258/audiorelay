@@ -3,6 +3,8 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,8 +31,7 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		"-ac", "2",
 		"-ar", "48000",
 		"-f", "ogg",
-		"-content_type", "audio/ogg",
-		spec.Output,
+		"pipe:1",
 	}
 
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
@@ -54,10 +55,7 @@ func TestFFmpegPipelineLifecycle(t *testing.T) {
 exit 0
 `)
 
-	p, err := newFFmpegWithExecutable(testSpec(), script)
-	if err != nil {
-		t.Fatalf("newFFmpegWithExecutable() error = %v", err)
-	}
+	p := newTestPipeline(script)
 	if err := p.Wait(); !errors.Is(err, ErrNotStarted) {
 		t.Errorf("Wait() before Start error = %v, want %v", err, ErrNotStarted)
 	}
@@ -83,15 +81,12 @@ printf 'synthetic ffmpeg failure\n' >&2
 exit 7
 `)
 
-	p, err := newFFmpegWithExecutable(testSpec(), script)
-	if err != nil {
-		t.Fatalf("newFFmpegWithExecutable() error = %v", err)
-	}
+	p := newTestPipeline(script)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	err = p.Wait()
+	err := p.Wait()
 	if err == nil {
 		t.Fatal("Wait() error = nil, want process error")
 	}
@@ -106,10 +101,7 @@ trap '' INT TERM
 while :; do :; done
 `)
 
-	p, err := newFFmpegWithExecutable(testSpec(), script)
-	if err != nil {
-		t.Fatalf("newFFmpegWithExecutable() error = %v", err)
-	}
+	p := newTestPipeline(script)
 	if err := p.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -123,6 +115,22 @@ while :; do :; done
 	if err := p.Wait(); err == nil {
 		t.Fatal("Wait() after Stop() error = nil, want process termination error")
 	}
+}
+
+func newTestPipeline(executable string) Pipeline {
+	return newFFmpegWithPublisher(
+		executable,
+		buildFFmpegArgs(testSpec()),
+		slog.Default(),
+		func(_ context.Context, stream io.ReadCloser, producerDone <-chan struct{}) error {
+			defer stream.Close()
+			if _, err := io.Copy(io.Discard, stream); err != nil {
+				return err
+			}
+			<-producerDone
+			return nil
+		},
+	)
 }
 
 func testSpec() Spec {

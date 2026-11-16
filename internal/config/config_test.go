@@ -42,18 +42,20 @@ func TestParseOverrides(t *testing.T) {
 		"-channels=1",
 		"-sample-rate=24000",
 		"-log-level=debug",
+		"-source-password-file=/run/secrets/source-password",
 	})
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
 
 	want := Config{
-		Input:      "https://upstream.example/live.m3u8",
-		Output:     "icecast://source:password@localhost:8000/tv.opus",
-		Bitrate:    "48k",
-		Channels:   1,
-		SampleRate: 24000,
-		LogLevel:   "debug",
+		Input:              "https://upstream.example/live.m3u8",
+		Output:             "icecast://source:password@localhost:8000/tv.opus",
+		Bitrate:            "48k",
+		Channels:           1,
+		SampleRate:         24000,
+		LogLevel:           "debug",
+		SourcePasswordFile: "/run/secrets/source-password",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Parse() = %#v, want %#v", got, want)
@@ -184,6 +186,7 @@ func TestUsage(t *testing.T) {
 		"-channels COUNT",
 		"-sample-rate HZ",
 		"-log-level LEVEL",
+		"-source-password-file PATH",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("Usage() output does not contain %q:\n%s", want, output.String())

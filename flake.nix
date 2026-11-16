@@ -30,6 +30,11 @@
         default = pkgs.callPackage ./nix/package.nix { };
       });
 
+      nixosModules = {
+        default = import ./nix/module.nix;
+        audiorelay = self.nixosModules.default;
+      };
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [

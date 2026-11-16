@@ -32,6 +32,10 @@ func main() {
 	if err := config.Validate(cfg); err != nil {
 		log.Fatalf("audiorelay: invalid configuration: %v", err)
 	}
+	cfg, err = config.WithSourcePassword(cfg)
+	if err != nil {
+		log.Fatalf("audiorelay: %v", err)
+	}
 
 	logger, err := logging.New(cfg.LogLevel, os.Stderr)
 	if err != nil {
