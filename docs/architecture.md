@@ -88,6 +88,12 @@ idempotent and safe after exit. Cancelling the `Start` context is equivalent to
 `Stop`. The backend owns its own process management, stderr capture and error
 mapping, so the relay never inspects ffmpeg output directly.
 
+The initial `FFmpegBackend` starts an `ffmpeg` executable found on `PATH`.
+It extracts the first audio stream, encodes it as Opus, muxes Ogg, and
+publishes to the configured sink URL. It keeps the last 64 KiB of stderr for
+process error reporting, sends an interrupt for normal shutdown, and falls
+back to killing the process when the stop context expires.
+
 ### relay contract
 
 `Run(ctx)` owns the restart loop: map `Config` → `pipeline.Spec`, start, wait,

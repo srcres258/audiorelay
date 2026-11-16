@@ -4,10 +4,10 @@ Lightweight live audio relay: pulls an upstream live stream (typically HLS),
 extracts its audio, transcodes it to low-bitrate Opus, and publishes it as an
 Ogg Opus HTTP stream for mobile clients.
 
-Current state: **partial skeleton**. Command-line configuration parsing and
-validation, plus pipeline supervision with restart/backoff handling, are
-implemented; the ffmpeg pipeline backend is still a stub that returns `not
-implemented`.
+Current state: **working skeleton**. Command-line configuration and
+validation, pipeline supervision with restart/backoff handling, and the
+ffmpeg process backend are implemented. End-to-end Icecast/HLS verification
+and production hardening remain.
 
 ## Design target
 
@@ -30,7 +30,7 @@ planned extensions.
 |---|---|
 | `cmd/audiorelay/` | CLI entry point, wiring only |
 | `internal/config/` | configuration types, parsing, validation and tests |
-| `internal/pipeline/` | media plane boundary + ffmpeg backend (stub) |
+| `internal/pipeline/` | media plane boundary + ffmpeg process backend |
 | `internal/relay/` | control plane: supervision, restart and backoff |
 | `nix/package.nix` | Go package build, ffmpeg wrapped onto `PATH` |
 | `examples/icecast.xml` | development Icecast configuration |

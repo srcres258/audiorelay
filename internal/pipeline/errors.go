@@ -2,6 +2,9 @@ package pipeline
 
 import "errors"
 
-// ErrNotImplemented is returned by the scaffolding stubs. Remove it once the
-// ffmpeg backend has a real implementation.
-var ErrNotImplemented = errors.New("pipeline: not implemented")
+// ErrAlreadyStarted indicates that Start was called more than once.
+var ErrAlreadyStarted = errors.New("pipeline: already started")
+
+// ErrNotStarted indicates that a lifecycle method requiring a running process
+// was called before Start.
+var ErrNotStarted = errors.New("pipeline: not started")
