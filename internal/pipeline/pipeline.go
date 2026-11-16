@@ -15,8 +15,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -78,23 +80,28 @@ type Backend interface {
 
 // FFmpegBackend constructs pipelines backed by the ffmpeg executable found
 // on PATH.
-type FFmpegBackend struct{}
+type FFmpegBackend struct {
+	// Logger receives process lifecycle and ffmpeg stderr records. A nil
+	// logger uses slog.Default().
+	Logger *slog.Logger
+}
 
 // New constructs an ffmpeg-backed pipeline without starting a process.
-func (FFmpegBackend) New(spec Spec) (Pipeline, error) {
-	return NewFFmpeg(spec)
+func (b FFmpegBackend) New(spec Spec) (Pipeline, error) {
+	return newFFmpegWithExecutableAndLogger(spec, ffmpegExecutable, b.Logger)
 }
 
 // NewFFmpeg returns a pipeline backed by the ffmpeg executable found on PATH.
 // It validates the media settings but does not start a process until Start is
 // called.
 func NewFFmpeg(spec Spec) (Pipeline, error) {
-	return newFFmpegWithExecutable(spec, ffmpegExecutable)
+	return newFFmpegWithExecutableAndLogger(spec, ffmpegExecutable, slog.Default())
 }
 
 type ffmpegPipeline struct {
 	executable string
 	args       []string
+	logger     *slog.Logger
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -105,16 +112,24 @@ type ffmpegPipeline struct {
 }
 
 func newFFmpegWithExecutable(spec Spec, executable string) (Pipeline, error) {
+	return newFFmpegWithExecutableAndLogger(spec, executable, slog.Default())
+}
+
+func newFFmpegWithExecutableAndLogger(spec Spec, executable string, logger *slog.Logger) (Pipeline, error) {
 	if err := validateSpec(spec); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(executable) == "" {
 		return nil, fmt.Errorf("ffmpeg executable must not be empty")
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 
 	return &ffmpegPipeline{
 		executable: executable,
 		args:       buildFFmpegArgs(spec),
+		logger:     logger,
 	}, nil
 }
 
@@ -130,7 +145,8 @@ func (p *ffmpegPipeline) Start(ctx context.Context) error {
 		return ErrAlreadyStarted
 	}
 
-	stderr := &tailBuffer{max: stderrLimit}
+	tail := &tailBuffer{max: stderrLimit}
+	stderr := &processStderr{tail: tail, logger: p.logger}
 	cmd := exec.CommandContext(ctx, p.executable, p.args...)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = stderr
@@ -139,17 +155,22 @@ func (p *ffmpegPipeline) Start(ctx context.Context) error {
 	}
 
 	p.cmd = cmd
-	p.stderr = stderr
+	p.stderr = tail
 	p.done = make(chan struct{})
 	p.started = true
+	p.logger.Info("ffmpeg process started", "pid", cmd.Process.Pid)
 	go p.collectWait(cmd, stderr)
 	return nil
 }
 
-func (p *ffmpegPipeline) collectWait(cmd *exec.Cmd, stderr *tailBuffer) {
+func (p *ffmpegPipeline) collectWait(cmd *exec.Cmd, stderr *processStderr) {
 	err := cmd.Wait()
+	stderr.Flush()
 	if err != nil {
-		err = formatProcessError(err, stderr.String())
+		err = formatProcessError(err, stderr.tail.String())
+		p.logger.Error("ffmpeg process exited", "pid", cmd.Process.Pid, "error", err)
+	} else {
+		p.logger.Info("ffmpeg process exited", "pid", cmd.Process.Pid)
 	}
 
 	p.mu.Lock()
@@ -232,6 +253,7 @@ func validateSpec(spec Spec) error {
 		Bitrate:    spec.Bitrate,
 		Channels:   spec.Channels,
 		SampleRate: spec.SampleRate,
+		LogLevel:   config.DefaultLogLevel,
 	}); err != nil {
 		return fmt.Errorf("invalid ffmpeg spec: %w", err)
 	}
@@ -259,11 +281,57 @@ func buildFFmpegArgs(spec Spec) []string {
 }
 
 func formatProcessError(processErr error, stderr string) error {
-	stderr = strings.TrimSpace(stderr)
+	stderr = strings.TrimSpace(redactCredentials(stderr))
 	if stderr == "" {
 		return fmt.Errorf("ffmpeg: %w", processErr)
 	}
 	return fmt.Errorf("ffmpeg: %w: %s", processErr, stderr)
+}
+
+type processStderr struct {
+	tail   *tailBuffer
+	logger *slog.Logger
+
+	mu      sync.Mutex
+	pending []byte
+}
+
+func (w *processStderr) Write(data []byte) (int, error) {
+	if _, err := w.tail.Write(data); err != nil {
+		return 0, err
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, data...)
+	for {
+		index := strings.IndexByte(string(w.pending), '\n')
+		if index < 0 {
+			break
+		}
+		line := strings.TrimSpace(string(w.pending[:index]))
+		w.pending = w.pending[index+1:]
+		if line != "" {
+			w.logger.Warn("ffmpeg stderr", "line", redactCredentials(line))
+		}
+	}
+	return len(data), nil
+}
+
+func (w *processStderr) Flush() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	line := strings.TrimSpace(string(w.pending))
+	w.pending = nil
+	if line != "" {
+		w.logger.Warn("ffmpeg stderr", "line", redactCredentials(line))
+	}
+}
+
+var credentialsPattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^@\s]+@`)
+
+func redactCredentials(value string) string {
+	return credentialsPattern.ReplaceAllString(value, `${1}[REDACTED]@`)
 }
 
 type tailBuffer struct {

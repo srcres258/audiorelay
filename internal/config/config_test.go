@@ -25,6 +25,7 @@ func TestParseDefaults(t *testing.T) {
 		Bitrate:    DefaultBitrate,
 		Channels:   DefaultChannels,
 		SampleRate: DefaultSampleRate,
+		LogLevel:   DefaultLogLevel,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Parse() = %#v, want %#v", got, want)
@@ -40,6 +41,7 @@ func TestParseOverrides(t *testing.T) {
 		"-bitrate=48k",
 		"-channels=1",
 		"-sample-rate=24000",
+		"-log-level=debug",
 	})
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -51,6 +53,7 @@ func TestParseOverrides(t *testing.T) {
 		Bitrate:    "48k",
 		Channels:   1,
 		SampleRate: 24000,
+		LogLevel:   "debug",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Parse() = %#v, want %#v", got, want)
@@ -107,6 +110,7 @@ func TestValidate(t *testing.T) {
 		Bitrate:    "32k",
 		Channels:   2,
 		SampleRate: 48000,
+		LogLevel:   DefaultLogLevel,
 	}
 	if err := Validate(valid); err != nil {
 		t.Fatalf("Validate(valid) error = %v", err)
@@ -147,6 +151,11 @@ func TestValidate(t *testing.T) {
 			edit: func(c *Config) { c.SampleRate = 44100 },
 			want: ErrInvalid,
 		},
+		{
+			name: "invalid log level",
+			edit: func(c *Config) { c.LogLevel = "trace" },
+			want: ErrInvalid,
+		},
 	}
 
 	for _, tt := range tests {
@@ -174,6 +183,7 @@ func TestUsage(t *testing.T) {
 		"-bitrate RATE",
 		"-channels COUNT",
 		"-sample-rate HZ",
+		"-log-level LEVEL",
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Errorf("Usage() output does not contain %q:\n%s", want, output.String())

@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/srcres258/audiorelay/internal/logging"
 )
 
 // Defaults for values that are derived from the Opus setup chosen for the
@@ -21,6 +23,7 @@ const (
 	DefaultBitrate    = "32k"
 	DefaultChannels   = 2
 	DefaultSampleRate = 48000
+	DefaultLogLevel   = logging.DefaultLevel
 
 	minBitrateKbps = 6
 	maxBitrateKbps = 510
@@ -47,6 +50,9 @@ type Config struct {
 
 	// SampleRate is the output sample rate in Hz.
 	SampleRate int
+
+	// LogLevel controls structured log verbosity: debug, info, warn, or error.
+	LogLevel string
 }
 
 // Parse builds a Config from command-line arguments (without the program
@@ -62,6 +68,7 @@ func Parse(args []string) (Config, error) {
 	flags.StringVar(&c.Bitrate, "bitrate", DefaultBitrate, "Opus bitrate in kbps (for example, 32k)")
 	flags.IntVar(&c.Channels, "channels", DefaultChannels, "output audio channels (1 or 2)")
 	flags.IntVar(&c.SampleRate, "sample-rate", DefaultSampleRate, "output sample rate in Hz")
+	flags.StringVar(&c.LogLevel, "log-level", DefaultLogLevel, "log level: debug, info, warn, or error")
 
 	if err := flags.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("parse flags: %w", err)
@@ -87,6 +94,7 @@ func Usage(w io.Writer) {
 	fmt.Fprintf(w, "  -bitrate RATE       Opus bitrate in kbps (default %q)\n", DefaultBitrate)
 	fmt.Fprintf(w, "  -channels COUNT     output audio channels, 1 or 2 (default %d)\n", DefaultChannels)
 	fmt.Fprintf(w, "  -sample-rate HZ     output sample rate in Hz (default %d)\n", DefaultSampleRate)
+	fmt.Fprintf(w, "  -log-level LEVEL    log level: debug, info, warn, or error (default %q)\n", DefaultLogLevel)
 	fmt.Fprintln(w, "  -h, -help           show this help")
 }
 
@@ -106,6 +114,9 @@ func Validate(c Config) error {
 	}
 	if !isSupportedSampleRate(c.SampleRate) {
 		return fmt.Errorf("sample-rate: %w: must be one of 8000, 12000, 16000, 24000, or 48000 Hz", ErrInvalid)
+	}
+	if _, err := logging.ParseLevel(c.LogLevel); err != nil {
+		return fmt.Errorf("log-level: %w: %v", ErrInvalid, err)
 	}
 
 	return nil

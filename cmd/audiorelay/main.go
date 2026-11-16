@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/srcres258/audiorelay/internal/config"
+	"github.com/srcres258/audiorelay/internal/logging"
 	"github.com/srcres258/audiorelay/internal/pipeline"
 	"github.com/srcres258/audiorelay/internal/relay"
 )
@@ -32,11 +33,16 @@ func main() {
 		log.Fatalf("audiorelay: invalid configuration: %v", err)
 	}
 
+	logger, err := logging.New(cfg.LogLevel, os.Stderr)
+	if err != nil {
+		log.Fatalf("audiorelay: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// Select the ffmpeg backend directly until additional media backends exist.
-	r, err := relay.New(cfg, pipeline.FFmpegBackend{})
+	r, err := relay.NewWithLogger(cfg, pipeline.FFmpegBackend{Logger: logger}, logger)
 	if err != nil {
 		log.Fatalf("audiorelay: %v", err)
 	}

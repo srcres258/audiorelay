@@ -112,13 +112,14 @@ initiated stop from failure.
 | `-bitrate` | Opus target bitrate, `6k`–`510k` | `32k` |
 | `-channels` | output channels, `1` or `2` | `2` |
 | `-sample-rate` | output sample rate: 8000, 12000, 16000, 24000, or 48000 Hz | `48000` |
+| `-log-level` | structured log level: debug, info, warn, or error | `info` |
 
 `-input` and `-output` must be absolute URLs. The configuration package does
 not restrict their schemes: choosing a supported upstream protocol and sink
 remains the responsibility of the selected pipeline backend.
 
-Later: config file (multiple channels), environment/systemd credentials for
-passwords, `-log-level`.
+Later: config file (multiple channels) and environment/systemd credentials
+for passwords.
 
 Known gap: the current CLI shape puts the Icecast source password in
 `argv`. Before any non-local deployment this must move to a file or systemd

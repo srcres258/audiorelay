@@ -9,6 +9,7 @@ package relay
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"time"
 
@@ -44,15 +45,26 @@ type Relay struct {
 	cfg     config.Config
 	backend pipeline.Backend
 	policy  restartPolicy
+	logger  *slog.Logger
 }
 
 // New validates cfg and returns a Relay that will build its pipeline from
 // backend when Run is called.
 func New(cfg config.Config, backend pipeline.Backend) (*Relay, error) {
-	return newWithPolicy(cfg, backend, defaultRestartPolicy())
+	return NewWithLogger(cfg, backend, slog.Default())
+}
+
+// NewWithLogger constructs a Relay using logger for lifecycle and retry
+// messages. A nil logger uses slog.Default().
+func NewWithLogger(cfg config.Config, backend pipeline.Backend, logger *slog.Logger) (*Relay, error) {
+	return newWithPolicyAndLogger(cfg, backend, defaultRestartPolicy(), logger)
 }
 
 func newWithPolicy(cfg config.Config, backend pipeline.Backend, policy restartPolicy) (*Relay, error) {
+	return newWithPolicyAndLogger(cfg, backend, policy, slog.Default())
+}
+
+func newWithPolicyAndLogger(cfg config.Config, backend pipeline.Backend, policy restartPolicy, logger *slog.Logger) (*Relay, error) {
 	if err := config.Validate(cfg); err != nil {
 		return nil, fmt.Errorf("validate relay configuration: %w", err)
 	}
@@ -68,11 +80,15 @@ func newWithPolicy(cfg config.Config, backend pipeline.Backend, policy restartPo
 	if policy.stopTimeout <= 0 {
 		return nil, fmt.Errorf("stop timeout must be positive")
 	}
+	if logger == nil {
+		logger = slog.Default()
+	}
 
 	return &Relay{
 		cfg:     cfg,
 		backend: backend,
 		policy:  policy,
+		logger:  logger,
 	}, nil
 }
 
@@ -95,8 +111,10 @@ func (r *Relay) Run(ctx context.Context) error {
 	}
 
 	backoff := r.policy.initialBackoff
+	r.logger.Info("relay started")
 	for {
 		if err := ctx.Err(); err != nil {
+			r.logger.Info("relay stopped", "reason", "context cancelled")
 			return nil
 		}
 
@@ -105,25 +123,41 @@ func (r *Relay) Run(ctx context.Context) error {
 			current = nil
 			err = fmt.Errorf("backend returned a nil pipeline")
 		}
+		if err != nil {
+			r.logger.Error("pipeline creation failed", "error", err)
+		}
 		if err == nil {
+			r.logger.Info("starting pipeline")
 			err = current.Start(ctx)
+			if err != nil {
+				r.logger.Error("pipeline start failed", "error", err)
+			}
 		}
 		if err == nil {
 			err = waitForPipeline(ctx, current)
+			if err != nil {
+				r.logger.Error("pipeline exited", "error", err)
+			} else {
+				r.logger.Warn("pipeline exited unexpectedly")
+			}
 		}
 
 		if ctx.Err() != nil {
 			if current != nil {
-				_ = stopPipeline(current, r.policy.stopTimeout)
+				if stopErr := stopPipeline(current, r.policy.stopTimeout); stopErr != nil {
+					r.logger.Error("pipeline stop failed", "error", stopErr)
+				}
 			}
+			r.logger.Info("relay stopped", "reason", "context cancelled")
 			return nil
 		}
 
 		if err == nil {
 			err = fmt.Errorf("pipeline exited unexpectedly")
 		}
-
+		r.logger.Warn("retrying pipeline", "backoff", backoff, "error", err)
 		if err := waitForRestart(ctx, backoff); err != nil {
+			r.logger.Info("relay stopped", "reason", "context cancelled")
 			return nil
 		}
 		backoff = nextBackoff(backoff, r.policy.maxBackoff)

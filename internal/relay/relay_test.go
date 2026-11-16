@@ -162,6 +162,7 @@ func testConfig() config.Config {
 		Bitrate:    "32k",
 		Channels:   2,
 		SampleRate: 48000,
+		LogLevel:   config.DefaultLogLevel,
 	}
 }
 

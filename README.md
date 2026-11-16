@@ -7,7 +7,8 @@ Ogg Opus HTTP stream for mobile clients.
 Current state: **working skeleton**. Command-line configuration and
 validation, pipeline supervision with restart/backoff handling, and the
 ffmpeg process backend are implemented. End-to-end Icecast/HLS verification
-and production hardening remain.
+and production hardening remain. Structured logs are emitted to stderr and
+can be filtered with `-log-level`.
 
 ## Design target
 
@@ -59,7 +60,7 @@ Git checkout.
 ## Planned milestones
 
 1. MVP: ffmpeg + Icecast relaying one upstream HLS audio track.
-2. Go control plane: flag parsing and restart with backoff. Structured logs remain to be added.
+2. Go control plane: flag parsing, structured logs and restart with backoff.
 3. NixOS service module (`nix/module.nix`) and per-architecture verification.
 4. Optional: in-process media backend, native HTTP broadcast sink, multi-channel.
 
