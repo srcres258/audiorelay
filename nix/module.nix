@@ -135,7 +135,10 @@ in
         LoadCredential = lib.optional (
           cfg.sourcePasswordFile != null
         ) "source-password:${cfg.sourcePasswordFile}";
-        Restart = "always";
+        # Transient failures are restarted, but permanent configuration or
+        # upstream errors exit with EX_CONFIG (78) and must stay stopped.
+        Restart = "on-failure";
+        RestartPreventExitStatus = 78;
         RestartSec = "5s";
 
         NoNewPrivileges = true;

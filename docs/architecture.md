@@ -136,7 +136,10 @@ put in `-output`, which would expose it in `ps` output and shell history.
 The NixOS module maps `services.audiorelay.sourcePasswordFile` to systemd
 `LoadCredential=source-password:…`; it passes only the private credential-file
 path to audiorelay. The option is intentionally a string, not a Nix path, so a
-secret manager's runtime file is not copied to the Nix store.
+secret manager's runtime file is not copied to the Nix store. The service uses
+`Restart=on-failure` and prevents restart for exit status 78 (`EX_CONFIG`), so
+permanent configuration or upstream failures do not create a systemd restart
+loop.
 
 ## Nix packaging
 

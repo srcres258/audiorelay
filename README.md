@@ -111,7 +111,9 @@ copies it into the service's private credential directory; audiorelay reads
 that copy through `-source-password-file`.
 
 The module only manages audiorelay's outbound connection. Configure and expose
-Icecast, including its firewall port, separately.
+Icecast, including its firewall port, separately. It restarts transient failures
+with systemd, but does not restart permanent configuration or upstream failures
+(exit status 78 / `EX_CONFIG`).
 
 Note: `nix build` only sees files tracked by Git (or, outside a Git
 repository, the whole directory tree). Track new sources before building in a
