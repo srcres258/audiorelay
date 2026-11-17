@@ -55,11 +55,15 @@ func main() {
 	}
 
 	if err := r.Run(ctx); err != nil && ctx.Err() == nil {
-		if errors.Is(err, pipeline.ErrPermanent) {
-			exitWithError("audiorelay", err, permanentFailureExitStatus)
-		}
-		log.Fatalf("audiorelay: %v", err)
+		exitWithError("audiorelay", err, exitStatus(err))
 	}
+}
+
+func exitStatus(err error) int {
+	if errors.Is(err, pipeline.ErrPermanent) {
+		return permanentFailureExitStatus
+	}
+	return 1
 }
 
 func exitWithError(prefix string, err error, status int) {
