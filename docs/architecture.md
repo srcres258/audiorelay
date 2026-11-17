@@ -178,8 +178,8 @@ compatibility testing, but is intentionally not required for the smoke test.
 
 1. Whether to keep Icecast long-term or migrate to a Go broadcast sink; the
    answer depends on measured listener counts and latency requirements.
-3. IPv6 only, or dual-stack? The demo targets ULA/link-local-free addresses;
+2. IPv6 only, or dual-stack? The demo targets ULA/link-local-free addresses;
    phones outside the LAN need WireGuard/Tailscale or a public address.
-4. Background playback behaviour of candidate Android players with an
+3. Background playback behaviour of candidate Android players with an
    unbounded Ogg Opus HTTP stream — needs measurement, not documentation
    reading.

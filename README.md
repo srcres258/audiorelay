@@ -4,11 +4,16 @@ Lightweight live audio relay: pulls an upstream live stream (typically HLS),
 extracts its audio, transcodes it to low-bitrate Opus, and publishes it as an
 Ogg Opus HTTP stream for mobile clients.
 
-Current state: **working skeleton**. Command-line configuration and
-validation, pipeline supervision with restart/backoff handling, and the
-ffmpeg process backend are implemented. End-to-end Icecast/HLS verification
-and production hardening remain. Structured logs are emitted to stderr and
-can be filtered with `-log-level`.
+Current state: **working demo**. Command-line configuration and validation,
+the ffmpeg pipeline backend, and supervision with capped restart backoff are
+implemented and verified end to end against Icecast by `scripts/e2e-smoke.sh`
+and CI. Permanent failures, such as invalid Icecast credentials or an
+upstream HTTP 4xx that prevents opening the input, stop instead of retrying.
+Structured logs are emitted to stderr and can be filtered with `-log-level`.
+
+Known gaps: listeners are disconnected whenever the pipeline restarts and
+players such as VLC for Android do not reconnect automatically; upstream
+errors that only appear as ffmpeg stderr text are classified conservatively.
 
 ## Design target
 
@@ -114,10 +119,14 @@ Git checkout.
 
 ## Planned milestones
 
-1. MVP: ffmpeg + Icecast relaying one upstream HLS audio track.
-2. Go control plane: flag parsing, structured logs and restart with backoff.
-3. NixOS service module (`nix/module.nix`) and per-architecture verification.
-4. Optional: in-process media backend, native HTTP broadcast sink, multi-channel.
+1. ~~MVP: ffmpeg + Icecast relaying one upstream HLS audio track.~~
+2. ~~Go control plane: flag parsing, structured logs and restart with backoff.~~
+3. ~~NixOS service module (`nix/module.nix`), evaluated by `nix flake
+   check`, and CI end-to-end checks.~~
+4. Per-architecture verification for `riscv64-linux` and `loongarch64-linux`.
+5. Listener continuity across pipeline restarts (client reconnect or silence
+   fill), plus health/metrics visibility.
+6. Optional: in-process media backend, native HTTP broadcast sink, multi-channel.
 
 ## License
 
