@@ -77,6 +77,58 @@ exit 0
 	}
 }
 
+func TestFormatProcessErrorClassifiesUpstreamHTTPFailures(t *testing.T) {
+	t.Parallel()
+
+	processErr := errors.New("exit status 1")
+	tests := []struct {
+		name      string
+		stderr    string
+		permanent bool
+	}{
+		{name: "not found", stderr: "[http @ 0x1] HTTP error 404 Not Found\nError opening input: Server returned 404 Not Found", permanent: true},
+		{name: "unauthorized", stderr: "[http @ 0x1] HTTP error 401 Unauthorized\nError opening input files: Server returned 401 Unauthorized", permanent: true},
+		{name: "forbidden", stderr: "Error opening input: Server returned 403 Forbidden", permanent: true},
+		{name: "segment not found", stderr: "[http @ 0x1] HTTP error 404 Not Found\n[hls @ 0x1] Failed to open segment", permanent: false},
+		{name: "request timeout", stderr: "Error opening input: HTTP error 408 Request Timeout", permanent: false},
+		{name: "rate limited", stderr: "Error opening input: HTTP error 429 Too Many Requests", permanent: false},
+		{name: "server error", stderr: "Error opening input: HTTP error 503 Service Unavailable", permanent: false},
+		{name: "network failure", stderr: "Connection timed out", permanent: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := formatProcessError(processErr, tt.stderr)
+			if got := errors.Is(err, ErrPermanent); got != tt.permanent {
+				t.Errorf("errors.Is(ErrPermanent) = %t, want %t: %v", got, tt.permanent, err)
+			}
+			if !errors.Is(err, processErr) {
+				t.Errorf("error = %v, want process error %v", err, processErr)
+			}
+		})
+	}
+}
+
+func TestFFmpegPipelineClassifiesUpstreamHTTPFailure(t *testing.T) {
+	script := writeExecutable(t, `#!/bin/sh
+printf '[http @ 0x1] HTTP error 404 Not Found\nError opening input: Server returned 404 Not Found\n' >&2
+exit 1
+`)
+
+	p := newTestPipeline(script)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	err := p.Wait()
+	if !errors.Is(err, ErrPermanent) {
+		t.Errorf("Wait() error = %v, want error wrapping %v", err, ErrPermanent)
+	}
+	if !strings.Contains(err.Error(), "HTTP error 404") {
+		t.Errorf("Wait() error = %v, want HTTP status context", err)
+	}
+}
+
 func TestFFmpegPipelineReportsProcessError(t *testing.T) {
 	script := writeExecutable(t, `#!/bin/sh
 printf 'synthetic ffmpeg failure\n' >&2

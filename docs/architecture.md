@@ -100,9 +100,13 @@ and falls back to killing the process when the stop context expires.
 ### relay contract
 
 `Run(ctx)` owns the restart loop: map `Config` → `pipeline.Spec`, start, wait,
-and on backend construction, start, or unexpected exit retry with capped
-exponential backoff. The production defaults are a 1-second initial delay,
-a 30-second maximum delay, and a 5-second stop timeout. Cancellation stops the
+and retry transient failures with capped exponential backoff. The production
+defaults are a 1-second initial delay, a 30-second maximum delay, a 30-second
+healthy-run reset period, and a 5-second stop timeout. Permanent pipeline failures, such as invalid Icecast credentials or an
+upstream HTTP 4xx that prevents ffmpeg from opening the configured input, are
+returned immediately instead of retried. Later HLS segment 404s remain
+transient because live playlists can briefly reference unavailable segments.
+Cancellation stops the
 current pipeline and returns `nil`, so the CLI can distinguish operator-
 initiated stop from failure.
 
@@ -172,10 +176,7 @@ compatibility testing, but is intentionally not required for the smoke test.
 
 ## Open questions
 
-1. Whether to distinguish persistent upstream errors such as HTTP 404 from
-   transient failures such as timeouts; the current policy retries both with
-   the same capped backoff.
-2. Whether to keep Icecast long-term or migrate to a Go broadcast sink; the
+1. Whether to keep Icecast long-term or migrate to a Go broadcast sink; the
    answer depends on measured listener counts and latency requirements.
 3. IPv6 only, or dual-stack? The demo targets ULA/link-local-free addresses;
    phones outside the LAN need WireGuard/Tailscale or a public address.

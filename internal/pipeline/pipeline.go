@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -326,7 +327,32 @@ func formatProcessError(processErr error, stderr string) error {
 	if stderr == "" {
 		return fmt.Errorf("ffmpeg: %w", processErr)
 	}
+	if isPermanentFFmpegError(stderr) {
+		return fmt.Errorf("%w: ffmpeg: %w: %s", ErrPermanent, processErr, stderr)
+	}
 	return fmt.Errorf("ffmpeg: %w: %s", processErr, stderr)
+}
+
+func isPermanentFFmpegError(stderr string) bool {
+	// A live HLS source can briefly return 404 for an individual segment.
+	// Only classify HTTP 4xx as permanent when ffmpeg failed to open the
+	// configured input itself, not when a later segment request failed.
+	if !strings.Contains(strings.ToLower(stderr), "error opening input") {
+		return false
+	}
+
+	matches := httpStatusPattern.FindAllStringSubmatch(stderr, -1)
+	for _, match := range matches {
+		if len(match) != 2 {
+			continue
+		}
+		status, err := strconv.Atoi(match[1])
+		if err == nil && status >= http.StatusBadRequest && status < http.StatusInternalServerError &&
+			status != http.StatusRequestTimeout && status != http.StatusTooManyRequests {
+			return true
+		}
+	}
+	return false
 }
 
 type processStderr struct {
@@ -370,6 +396,7 @@ func (w *processStderr) Flush() {
 }
 
 var credentialsPattern = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@]+:)[^@\s]+@`)
+var httpStatusPattern = regexp.MustCompile(`(?i)\b(?:http error|server returned|status code)\s*[:=]?\s*(\d{3})\b`)
 
 func redactCredentials(value string) string {
 	return credentialsPattern.ReplaceAllString(value, `${1}[REDACTED]@`)
