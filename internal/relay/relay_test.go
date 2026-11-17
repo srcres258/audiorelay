@@ -3,6 +3,8 @@ package relay
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"reflect"
 	"sync"
 	"testing"
@@ -134,6 +136,71 @@ func TestRunRestartsAfterPipelineFailure(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotRetryPermanentFailure(t *testing.T) {
+	t.Parallel()
+
+	permanent := fmt.Errorf("invalid credentials: %w", pipeline.ErrPermanent)
+	backend := &fakeBackend{newErrs: []error{permanent}}
+	relay, err := newWithPolicy(testConfig(), backend, testPolicy())
+	if err != nil {
+		t.Fatalf("newWithPolicy() error = %v", err)
+	}
+
+	err = relay.Run(context.Background())
+	if !errors.Is(err, pipeline.ErrPermanent) {
+		t.Errorf("Run() error = %v, want error wrapping %v", err, pipeline.ErrPermanent)
+	}
+	if got := len(backend.specs()); got != 1 {
+		t.Errorf("backend New() calls = %d, want 1", got)
+	}
+}
+
+func TestRunResetsBackoffAfterHealthyPipeline(t *testing.T) {
+	t.Parallel()
+
+	handler := &recordingHandler{}
+	first := &fakePipeline{waitErr: errPipelineFailed}
+	healthy := &delayedFailurePipeline{delay: 5 * time.Millisecond, waitErr: errPipelineFailed}
+	third := newBlockingPipeline()
+	backend := &fakeBackend{
+		pipelines: []pipeline.Pipeline{first, healthy, third},
+		newCalls:  make(chan struct{}, 16),
+	}
+	policy := testPolicy()
+	policy.backoffResetAfter = 2 * time.Millisecond
+	relay, err := newWithPolicyAndLogger(testConfig(), backend, policy, slog.New(handler))
+	if err != nil {
+		t.Fatalf("newWithPolicyAndLogger() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		result <- relay.Run(ctx)
+	}()
+
+	select {
+	case <-third.started:
+	case <-time.After(time.Second):
+		t.Fatal("third pipeline did not start")
+	}
+
+	cancel()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Errorf("Run() after cancellation error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not stop after cancellation")
+	}
+
+	if got, want := handler.retryBackoffs(), []time.Duration{time.Millisecond, time.Millisecond}; !reflect.DeepEqual(got, want) {
+		t.Errorf("retry backoffs = %v, want %v", got, want)
+	}
+}
+
 func TestNextBackoff(t *testing.T) {
 	t.Parallel()
 
@@ -168,15 +235,17 @@ func testConfig() config.Config {
 
 func testPolicy() restartPolicy {
 	return restartPolicy{
-		initialBackoff: time.Millisecond,
-		maxBackoff:     4 * time.Millisecond,
-		stopTimeout:    time.Second,
+		initialBackoff:    time.Millisecond,
+		maxBackoff:        4 * time.Millisecond,
+		backoffResetAfter: time.Millisecond,
+		stopTimeout:       time.Second,
 	}
 }
 
 type fakeBackend struct {
 	mu        sync.Mutex
 	pipelines []pipeline.Pipeline
+	newErrs   []error
 	calls     int
 	recorded  []pipeline.Spec
 	newCalls  chan struct{}
@@ -193,6 +262,9 @@ func (b *fakeBackend) New(spec pipeline.Spec) (pipeline.Pipeline, error) {
 	index := b.calls
 	b.calls++
 	b.newCalls <- struct{}{}
+	if index < len(b.newErrs) && b.newErrs[index] != nil {
+		return nil, b.newErrs[index]
+	}
 	if index >= len(b.pipelines) {
 		return b.pipelines[len(b.pipelines)-1], nil
 	}
@@ -254,6 +326,63 @@ func (p *fakePipeline) Stop(context.Context) error {
 		}
 	})
 	return nil
+}
+
+type delayedFailurePipeline struct {
+	delay   time.Duration
+	waitErr error
+}
+
+func (p *delayedFailurePipeline) Start(context.Context) error {
+	return nil
+}
+
+func (p *delayedFailurePipeline) Wait() error {
+	time.Sleep(p.delay)
+	return p.waitErr
+}
+
+func (p *delayedFailurePipeline) Stop(context.Context) error {
+	return nil
+}
+
+type recordingHandler struct {
+	mu       sync.Mutex
+	backoffs []time.Duration
+}
+
+func (h *recordingHandler) Enabled(context.Context, slog.Level) bool {
+	return true
+}
+
+func (h *recordingHandler) Handle(_ context.Context, record slog.Record) error {
+	if record.Message != "retrying pipeline" {
+		return nil
+	}
+
+	record.Attrs(func(attr slog.Attr) bool {
+		if attr.Key == "backoff" {
+			h.mu.Lock()
+			h.backoffs = append(h.backoffs, attr.Value.Duration())
+			h.mu.Unlock()
+		}
+		return true
+	})
+	return nil
+}
+
+func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler {
+	return h
+}
+
+func (h *recordingHandler) WithGroup(string) slog.Handler {
+	return h
+}
+
+func (h *recordingHandler) retryBackoffs() []time.Duration {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]time.Duration(nil), h.backoffs...)
 }
 
 func (p *fakePipeline) stopCount() int {

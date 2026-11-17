@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -72,6 +73,79 @@ func TestIcecastPublisher(t *testing.T) {
 	}
 	if got := string(<-bodies); got != "OggS test stream" {
 		t.Errorf("body = %q, want OggS test stream", got)
+	}
+}
+
+func TestIcecastPublisherClassifiesPermanentResponses(t *testing.T) {
+	t.Parallel()
+
+	for _, statusCode := range []int{
+		http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+	} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(statusCode)
+			}))
+			defer server.Close()
+
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("parse test server URL: %v", err)
+			}
+			publish, err := newIcecastPublisher(fmt.Sprintf("icecast://source:secret@%s/live.opus", serverURL.Host))
+			if err != nil {
+				t.Fatalf("newIcecastPublisher() error = %v", err)
+			}
+
+			reader, writer := io.Pipe()
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close stream: %v", err)
+			}
+			producerDone := make(chan struct{})
+			close(producerDone)
+
+			err = publish(context.Background(), reader, producerDone)
+			if !errors.Is(err, ErrPermanent) {
+				t.Errorf("publish() error = %v, want error wrapping %v", err, ErrPermanent)
+			}
+		})
+	}
+}
+
+func TestIcecastPublisherRetriesTransientResponses(t *testing.T) {
+	t.Parallel()
+
+	for _, statusCode := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(statusCode)
+			}))
+			defer server.Close()
+
+			serverURL, err := url.Parse(server.URL)
+			if err != nil {
+				t.Fatalf("parse test server URL: %v", err)
+			}
+			publish, err := newIcecastPublisher(fmt.Sprintf("icecast://source:secret@%s/live.opus", serverURL.Host))
+			if err != nil {
+				t.Fatalf("newIcecastPublisher() error = %v", err)
+			}
+
+			reader, writer := io.Pipe()
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close stream: %v", err)
+			}
+			producerDone := make(chan struct{})
+			close(producerDone)
+
+			err = publish(context.Background(), reader, producerDone)
+			if errors.Is(err, ErrPermanent) {
+				t.Errorf("publish() error = %v, do not want error wrapping %v", err, ErrPermanent)
+			}
+		})
 	}
 }
 

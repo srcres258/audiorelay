@@ -165,14 +165,26 @@ MOUNT_URL="http://[::1]:$ICECAST_PORT/tv.opus"
 wait_for_url "$MOUNT_URL" || fail "audiorelay did not publish the Icecast mount"
 
 # The password file must never be transformed into an ffmpeg command-line
-# argument. The Go Icecast client owns authentication and ffmpeg only writes
-# Ogg bytes to pipe:1.
-for child in $(<"/proc/$RELAY_PID/task/$RELAY_PID/children"); do
-    command_line=$(tr '\0' ' ' <"/proc/$child/cmdline")
-    if [[ "$command_line" == *"change-me-source"* || "$command_line" == *"icecast://"* ]]; then
-        fail "ffmpeg command line exposes Icecast credentials: $command_line"
-    fi
+# argument. Go may start ffmpeg from any runtime thread, so inspect children
+# of every relay thread rather than only the main thread. The Go Icecast client
+# owns authentication and ffmpeg only writes Ogg bytes to pipe:1.
+FFMPEG_PID=
+for children_file in /proc/"$RELAY_PID"/task/*/children; do
+    [[ -r "$children_file" ]] || continue
+    for child in $(<"$children_file"); do
+        [[ -r "/proc/$child/comm" ]] || continue
+        if [[ $(<"/proc/$child/comm") == ffmpeg ]]; then
+            FFMPEG_PID=$child
+            break 2
+        fi
+    done
 done
+[[ -n "$FFMPEG_PID" ]] || fail "could not find the relay's ffmpeg process"
+
+command_line=$(tr '\0' ' ' <"/proc/$FFMPEG_PID/cmdline")
+if [[ "$command_line" == *"change-me-source"* || "$command_line" == *"icecast://"* ]]; then
+    fail "ffmpeg command line exposes Icecast credentials: $command_line"
+fi
 
 CAPTURE="$RUNTIME_DIR/capture.ogg"
 CAPTURE_SECONDS=${AUDIORELAY_CAPTURE_SECONDS:-10}

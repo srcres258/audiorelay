@@ -8,6 +8,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -20,6 +21,7 @@ import (
 const (
 	defaultRestartBackoff    = time.Second
 	defaultMaxRestartBackoff = 30 * time.Second
+	defaultBackoffResetAfter = 30 * time.Second
 	defaultStopTimeout       = 5 * time.Second
 )
 
@@ -27,16 +29,18 @@ const (
 // stops unexpectedly. It is kept private so the public API remains small;
 // tests use newWithPolicy to avoid waiting for production backoff durations.
 type restartPolicy struct {
-	initialBackoff time.Duration
-	maxBackoff     time.Duration
-	stopTimeout    time.Duration
+	initialBackoff    time.Duration
+	maxBackoff        time.Duration
+	backoffResetAfter time.Duration
+	stopTimeout       time.Duration
 }
 
 func defaultRestartPolicy() restartPolicy {
 	return restartPolicy{
-		initialBackoff: defaultRestartBackoff,
-		maxBackoff:     defaultMaxRestartBackoff,
-		stopTimeout:    defaultStopTimeout,
+		initialBackoff:    defaultRestartBackoff,
+		maxBackoff:        defaultMaxRestartBackoff,
+		backoffResetAfter: defaultBackoffResetAfter,
+		stopTimeout:       defaultStopTimeout,
 	}
 }
 
@@ -77,6 +81,9 @@ func newWithPolicyAndLogger(cfg config.Config, backend pipeline.Backend, policy 
 	if policy.maxBackoff < policy.initialBackoff {
 		return nil, fmt.Errorf("maximum restart backoff must not be less than initial backoff")
 	}
+	if policy.backoffResetAfter <= 0 {
+		return nil, fmt.Errorf("restart backoff reset period must be positive")
+	}
 	if policy.stopTimeout <= 0 {
 		return nil, fmt.Errorf("stop timeout must be positive")
 	}
@@ -94,9 +101,11 @@ func newWithPolicyAndLogger(cfg config.Config, backend pipeline.Backend, policy 
 
 // Run starts the pipeline and keeps it alive until ctx is cancelled.
 //
-// A backend construction, start, or wait failure is treated as a transient
-// pipeline failure. The supervisor retries with capped exponential backoff.
-// Cancelling ctx stops the current pipeline and returns nil.
+// A backend construction, start, or wait failure is treated as transient unless
+// it wraps pipeline.ErrPermanent. Transient failures retry with capped
+// exponential backoff. A pipeline that ran long enough resets that backoff so
+// an isolated later failure recovers promptly. Cancelling ctx stops the current
+// pipeline and returns nil.
 func (r *Relay) Run(ctx context.Context) error {
 	if ctx == nil {
 		return fmt.Errorf("relay context must not be nil")
@@ -126,11 +135,14 @@ func (r *Relay) Run(ctx context.Context) error {
 		if err != nil {
 			r.logger.Error("pipeline creation failed", "error", err)
 		}
+		var startedAt time.Time
 		if err == nil {
 			r.logger.Info("starting pipeline")
 			err = current.Start(ctx)
 			if err != nil {
 				r.logger.Error("pipeline start failed", "error", err)
+			} else {
+				startedAt = time.Now()
 			}
 		}
 		if err == nil {
@@ -154,6 +166,16 @@ func (r *Relay) Run(ctx context.Context) error {
 
 		if err == nil {
 			err = fmt.Errorf("pipeline exited unexpectedly")
+		}
+		if errors.Is(err, pipeline.ErrPermanent) {
+			r.logger.Error("pipeline cannot be restarted", "error", err)
+			return err
+		}
+		if !startedAt.IsZero() && time.Since(startedAt) >= r.policy.backoffResetAfter {
+			if backoff != r.policy.initialBackoff {
+				r.logger.Info("resetting restart backoff", "previous_backoff", backoff)
+			}
+			backoff = r.policy.initialBackoff
 		}
 		r.logger.Warn("retrying pipeline", "backoff", backoff, "error", err)
 		if err := waitForRestart(ctx, backoff); err != nil {

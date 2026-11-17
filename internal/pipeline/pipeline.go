@@ -13,6 +13,7 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -198,10 +199,15 @@ func (p *ffmpegPipeline) collectWait(
 
 	var err error
 	switch {
-	case sourceErr != nil:
-		err = fmt.Errorf("publish Ogg stream to Icecast: %w", sourceErr)
+	case processErr != nil && sourceErr != nil:
+		err = errors.Join(
+			formatProcessError(processErr, stderr.tail.String()),
+			fmt.Errorf("publish Ogg stream to Icecast: %w", sourceErr),
+		)
 	case processErr != nil:
 		err = formatProcessError(processErr, stderr.tail.String())
+	case sourceErr != nil:
+		err = fmt.Errorf("publish Ogg stream to Icecast: %w", sourceErr)
 	}
 	if err != nil {
 		p.logger.Error("ffmpeg pipeline exited", "pid", cmd.Process.Pid, "error", err)
@@ -291,7 +297,7 @@ func validateSpec(spec Spec) error {
 		SampleRate: spec.SampleRate,
 		LogLevel:   config.DefaultLogLevel,
 	}); err != nil {
-		return fmt.Errorf("invalid ffmpeg spec: %w", err)
+		return fmt.Errorf("%w: invalid ffmpeg spec: %w", ErrPermanent, err)
 	}
 	return nil
 }

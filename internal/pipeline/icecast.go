@@ -15,7 +15,7 @@ import (
 func newIcecastPublisher(output string) (publisher, error) {
 	parsed, err := url.Parse(output)
 	if err != nil {
-		return nil, fmt.Errorf("parse Icecast output URL: %w", err)
+		return nil, fmt.Errorf("%w: parse Icecast output URL: %w", ErrPermanent, err)
 	}
 
 	scheme := parsed.Scheme
@@ -25,14 +25,14 @@ func newIcecastPublisher(output string) (publisher, error) {
 	case "icecasts":
 		scheme = "https"
 	default:
-		return nil, fmt.Errorf("unsupported output URL scheme %q: expected icecast or icecasts", parsed.Scheme)
+		return nil, fmt.Errorf("%w: unsupported output URL scheme %q: expected icecast or icecasts", ErrPermanent, parsed.Scheme)
 	}
 	if parsed.Host == "" || parsed.User == nil || parsed.User.Username() == "" {
-		return nil, fmt.Errorf("invalid Icecast output URL: host and source username are required")
+		return nil, fmt.Errorf("%w: invalid Icecast output URL: host and source username are required", ErrPermanent)
 	}
 	password, passwordSet := parsed.User.Password()
 	if !passwordSet || password == "" {
-		return nil, fmt.Errorf("invalid Icecast output URL: source password is required")
+		return nil, fmt.Errorf("%w: invalid Icecast output URL: source password is required", ErrPermanent)
 	}
 
 	endpoint := *parsed
@@ -70,7 +70,11 @@ func newIcecastPublisher(output string) (publisher, error) {
 
 		if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 			body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-			return fmt.Errorf("Icecast source request failed: %s: %s", response.Status, strings.TrimSpace(string(body)))
+			err := fmt.Errorf("Icecast source request failed: %s: %s", response.Status, strings.TrimSpace(string(body)))
+			if isPermanentIcecastStatus(response.StatusCode) {
+				return fmt.Errorf("%w: %w", ErrPermanent, err)
+			}
+			return err
 		}
 
 		select {
@@ -80,4 +84,11 @@ func newIcecastPublisher(output string) (publisher, error) {
 			return ctx.Err()
 		}
 	}, nil
+}
+
+func isPermanentIcecastStatus(statusCode int) bool {
+	return statusCode >= http.StatusBadRequest &&
+		statusCode < http.StatusInternalServerError &&
+		statusCode != http.StatusRequestTimeout &&
+		statusCode != http.StatusTooManyRequests
 }

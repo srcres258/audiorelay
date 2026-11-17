@@ -47,6 +47,8 @@ func TestNewFFmpegValidatesSpec(t *testing.T) {
 	}
 	if _, err := NewFFmpeg(Spec{}); err == nil {
 		t.Fatal("NewFFmpeg(empty spec) error = nil, want error")
+	} else if !errors.Is(err, ErrPermanent) {
+		t.Errorf("NewFFmpeg(empty spec) error = %v, want error wrapping %v", err, ErrPermanent)
 	}
 }
 
@@ -92,6 +94,33 @@ exit 7
 	}
 	if !strings.Contains(err.Error(), "synthetic ffmpeg failure") {
 		t.Errorf("Wait() error = %v, want stderr context", err)
+	}
+}
+
+func TestFFmpegPipelinePreservesProcessAndPublisherErrors(t *testing.T) {
+	script := writeExecutable(t, `#!/bin/sh
+printf 'synthetic ffmpeg failure\n' >&2
+exit 7
+`)
+	publisherErr := errors.New("synthetic Icecast failure")
+	p := newFFmpegWithPublisher(
+		script,
+		buildFFmpegArgs(testSpec()),
+		slog.Default(),
+		func(context.Context, io.ReadCloser, <-chan struct{}) error {
+			return publisherErr
+		},
+	)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	err := p.Wait()
+	if !errors.Is(err, publisherErr) {
+		t.Errorf("Wait() error = %v, want error wrapping %v", err, publisherErr)
+	}
+	if !strings.Contains(err.Error(), "synthetic ffmpeg failure") {
+		t.Errorf("Wait() error = %v, want ffmpeg stderr context", err)
 	}
 }
 
