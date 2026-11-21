@@ -12,6 +12,28 @@ import (
 	"testing"
 )
 
+func TestIcecastClientBoundsStalls(t *testing.T) {
+	t.Parallel()
+
+	client := newIcecastClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
+	}
+	if transport.DialContext == nil {
+		t.Error("DialContext = nil, want a dialer with connect timeout and keepalive")
+	}
+	if transport.ResponseHeaderTimeout <= 0 {
+		t.Errorf("ResponseHeaderTimeout = %v, want a positive bound", transport.ResponseHeaderTimeout)
+	}
+	if !transport.DisableCompression {
+		t.Error("DisableCompression = false, want true for an already compressed stream")
+	}
+	if transport.Proxy != nil {
+		t.Error("Proxy != nil, want no proxy for the source upload")
+	}
+}
+
 func TestIcecastPublisher(t *testing.T) {
 	t.Parallel()
 

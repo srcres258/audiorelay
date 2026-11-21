@@ -4,9 +4,22 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
+)
+
+const (
+	// icecastConnectTimeout bounds dialing and the source handshake. A sink
+	// that accepts the TCP connection but never answers must fail the
+	// pipeline quickly instead of blocking decoding behind a stalled write.
+	icecastConnectTimeout = 10 * time.Second
+
+	// icecastKeepAlivePeriod keeps NAT and firewall state alive between
+	// writes of a long-lived source upload.
+	icecastKeepAlivePeriod = 30 * time.Second
 )
 
 // newIcecastPublisher creates an HTTP PUT source client for Icecast 2.4 and
@@ -42,12 +55,7 @@ func newIcecastPublisher(output string) (publisher, error) {
 		endpoint.Path = "/"
 	}
 
-	client := &http.Client{
-		Transport: &http.Transport{Proxy: nil},
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
+	client := newIcecastClient()
 	username := parsed.User.Username()
 
 	return func(ctx context.Context, stream io.ReadCloser, producerDone <-chan struct{}) error {
@@ -84,6 +92,31 @@ func newIcecastPublisher(output string) (publisher, error) {
 			return ctx.Err()
 		}
 	}, nil
+}
+
+// newIcecastClient builds the HTTP client used for the source upload.
+//
+// The upload is a single long-lived request, so the transport needs explicit
+// bounds: a dial or handshake that never completes, or an idle connection
+// whose peer disappeared, would otherwise block the publisher (and therefore
+// ffmpeg's writes) for as long as the kernel keeps the socket around.
+func newIcecastClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: nil,
+			DialContext: (&net.Dialer{
+				Timeout:   icecastConnectTimeout,
+				KeepAlive: icecastKeepAlivePeriod,
+			}).DialContext,
+			ResponseHeaderTimeout: icecastConnectTimeout,
+			ExpectContinueTimeout: time.Second,
+			// Ogg is already compressed; gzip only adds buffering.
+			DisableCompression: true,
+		},
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func isPermanentIcecastStatus(statusCode int) bool {

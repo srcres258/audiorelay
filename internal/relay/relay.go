@@ -19,9 +19,21 @@ import (
 )
 
 const (
-	defaultRestartBackoff    = time.Second
-	defaultMaxRestartBackoff = 30 * time.Second
-	defaultBackoffResetAfter = 30 * time.Second
+	// defaultRestartBackoff is deliberately short: every pipeline restart
+	// tears down the Icecast source connection, which makes the mount vanish
+	// for the duration of the outage and hands 404 to new listeners.
+	defaultRestartBackoff = time.Second
+	// defaultMaxRestartBackoff keeps the outage gap small. Measured against
+	// a local origin, an 8 s upstream outage left the Icecast mount absent
+	// for 8 s plus this cap, so the cap is what determines how quickly
+	// listeners stop seeing 404 after the upstream recovers. Retrying a dead
+	// origin every couple of seconds costs one playlist request per attempt,
+	// which is far cheaper than a mount that stays absent.
+	defaultMaxRestartBackoff = 2 * time.Second
+	// defaultBackoffResetAfter shortens the window in which repeated short
+	// failures keep escalating the delay: a pipeline that survived this long
+	// is treated as healthy again.
+	defaultBackoffResetAfter = 10 * time.Second
 	defaultStopTimeout       = 5 * time.Second
 )
 

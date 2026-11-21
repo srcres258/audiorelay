@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,11 @@ func TestBuildFFmpegArgs(t *testing.T) {
 		"-hide_banner",
 		"-nostdin",
 		"-loglevel", "warning",
+		"-rw_timeout", "10000000",
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", "4",
+		"-seg_max_retry", "3",
 		"-i", spec.Input,
 		"-map", "0:a:0",
 		"-vn",
@@ -36,6 +42,35 @@ func TestBuildFFmpegArgs(t *testing.T) {
 
 	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("buildFFmpegArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildFFmpegArgsPutsNetworkOptionsBeforeInput(t *testing.T) {
+	t.Parallel()
+
+	args := buildFFmpegArgs(testSpec())
+	inputIndex := -1
+	for i, arg := range args {
+		if arg == "-i" {
+			inputIndex = i
+			break
+		}
+	}
+	if inputIndex < 0 {
+		t.Fatalf("buildFFmpegArgs() = %#v, want an -i option", args)
+	}
+
+	// ffmpeg only applies protocol and demuxer options to the input that
+	// follows them on the command line.
+	for _, option := range []string{"-rw_timeout", "-reconnect", "-seg_max_retry"} {
+		index := slices.Index(args, option)
+		if index < 0 {
+			t.Errorf("buildFFmpegArgs() = %#v, want option %q", args, option)
+			continue
+		}
+		if index > inputIndex {
+			t.Errorf("option %q at %d comes after -i at %d", option, index, inputIndex)
+		}
 	}
 }
 
@@ -173,6 +208,42 @@ exit 7
 	}
 	if !strings.Contains(err.Error(), "synthetic ffmpeg failure") {
 		t.Errorf("Wait() error = %v, want ffmpeg stderr context", err)
+	}
+}
+
+func TestFFmpegPipelineStopsWhenSinkStalls(t *testing.T) {
+	// A decoder that keeps producing bytes is stalled only if the sink stops
+	// consuming them; cat dies of SIGPIPE once the pipe reader is closed.
+	script := writeExecutable(t, `#!/bin/sh
+exec cat /dev/zero
+`)
+
+	stalled := make(chan struct{})
+	p := newFFmpegWithPublisher(
+		script,
+		buildFFmpegArgs(testSpec()),
+		slog.Default(),
+		func(ctx context.Context, stream io.ReadCloser, _ <-chan struct{}) error {
+			defer stream.Close()
+			<-stalled
+			<-ctx.Done()
+			return ctx.Err()
+		},
+	)
+	p.publishStallTimeout = 50 * time.Millisecond
+
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	// No reader: the publisher blocks until the watchdog cancels it.
+	close(stalled)
+
+	err := p.Wait()
+	if err == nil {
+		t.Fatal("Wait() error = nil, want sink stall error")
+	}
+	if !strings.Contains(err.Error(), "sink stalled") {
+		t.Errorf("Wait() error = %v, want sink stall context", err)
 	}
 }
 

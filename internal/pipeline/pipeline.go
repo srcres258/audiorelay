@@ -33,6 +33,33 @@ const (
 	ffmpegExecutable = "ffmpeg"
 	stderrLimit      = 64 * 1024
 	killWaitTimeout  = time.Second
+
+	// inputStallTimeout bounds how long a single upstream read or connect
+	// may make no progress. ffmpeg's http protocol option rw_timeout is
+	// the only network option its HLS demuxer forwards to playlist and
+	// segment requests (libavformat/aviobuf.c: ffio_copy_url_options), so a
+	// dead connection is noticed here instead of hanging forever.
+	inputStallTimeout = 10 * time.Second
+
+	// inputReconnectDelayMax caps the delay of ffmpeg's own protocol-level
+	// reconnect. It is best effort: the HLS demuxer does not propagate the
+	// reconnect options to freshly opened playlist and segment requests, so
+	// this only helps connections ffmpeg already owns.
+	inputReconnectDelayMax = 4 * time.Second
+
+	// segmentMaxRetry lets the HLS demuxer re-fetch a segment that failed
+	// to open. The ffmpeg default of 0 gives up on the first error and
+	// skips the segment, which is audible as a gap for a live stream.
+	segmentMaxRetry = 3
+
+	// defaultPublishStallTimeout is how long ffmpeg may be blocked handing
+	// Ogg bytes to the sink before the pipeline is treated as dead. Without
+	// it a sink that silently stops reading stalls decoding indefinitely.
+	defaultPublishStallTimeout = 15 * time.Second
+
+	// publishStallCheckInterval caps the watchdog polling period. The
+	// watchdog polls four times per stall timeout for shorter timeouts.
+	publishStallCheckInterval = time.Second
 )
 
 // Spec is a fully resolved pipeline description. It contains no knowledge of
@@ -106,12 +133,29 @@ type ffmpegPipeline struct {
 	logger     *slog.Logger
 	publish    publisher
 
+	// publishStallTimeout is the watchdog threshold in use for this
+	// pipeline; zero disables the watchdog. Tests use a short value.
+	publishStallTimeout time.Duration
+
 	mu      sync.Mutex
 	cmd     *exec.Cmd
 	stderr  *tailBuffer
 	done    chan struct{}
 	started bool
 	waitErr error
+}
+
+// pipelineRun carries the per-start state handed to the goroutines that
+// supervise one ffmpeg process.
+type pipelineRun struct {
+	cmd           *exec.Cmd
+	stderr        *processStderr
+	stdout        *io.PipeWriter
+	writer        *watchWriter
+	producerDone  chan struct{}
+	sourceDone    <-chan error
+	stopWatch     chan struct{}
+	cancelPublish context.CancelFunc
 }
 
 // publisher sends ffmpeg's Ogg byte stream to the configured downstream sink.
@@ -142,10 +186,11 @@ func newFFmpegWithExecutableAndLogger(spec Spec, executable string, logger *slog
 
 func newFFmpegWithPublisher(executable string, args []string, logger *slog.Logger, publish publisher) *ffmpegPipeline {
 	return &ffmpegPipeline{
-		executable: executable,
-		args:       args,
-		logger:     logger,
-		publish:    publish,
+		executable:          executable,
+		args:                args,
+		logger:              logger,
+		publish:             publish,
+		publishStallTimeout: defaultPublishStallTimeout,
 	}
 }
 
@@ -164,13 +209,27 @@ func (p *ffmpegPipeline) Start(ctx context.Context) error {
 	tail := &tailBuffer{max: stderrLimit}
 	stderr := &processStderr{tail: tail, logger: p.logger}
 	stdout, stdin := io.Pipe()
+	watcher := &watchWriter{writer: stdin}
+	publishCtx, cancelPublish := context.WithCancel(ctx)
 	producerDone := make(chan struct{})
 	sourceDone := make(chan error, 1)
 	cmd := exec.CommandContext(ctx, p.executable, p.args...)
-	cmd.Stdout = stdin
+	cmd.Stdout = watcher
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
+		cancelPublish()
 		return fmt.Errorf("start ffmpeg: %w", err)
+	}
+
+	run := &pipelineRun{
+		cmd:           cmd,
+		stderr:        stderr,
+		stdout:        stdin,
+		writer:        watcher,
+		producerDone:  producerDone,
+		sourceDone:    sourceDone,
+		stopWatch:     make(chan struct{}),
+		cancelPublish: cancelPublish,
 	}
 
 	p.cmd = cmd
@@ -179,41 +238,72 @@ func (p *ffmpegPipeline) Start(ctx context.Context) error {
 	p.started = true
 	p.logger.Info("ffmpeg process started", "pid", cmd.Process.Pid)
 	go func() {
-		sourceDone <- p.publish(ctx, stdout, producerDone)
+		sourceDone <- p.publish(publishCtx, stdout, producerDone)
 	}()
-	go p.collectWait(cmd, stderr, stdin, producerDone, sourceDone)
+	if p.publishStallTimeout > 0 {
+		go p.watchPublish(run)
+	}
+	go p.collectWait(run)
 	return nil
 }
 
-func (p *ffmpegPipeline) collectWait(
-	cmd *exec.Cmd,
-	stderr *processStderr,
-	stdout *io.PipeWriter,
-	producerDone chan struct{},
-	sourceDone <-chan error,
-) {
-	processErr := cmd.Wait()
-	stderr.Flush()
-	_ = stdout.Close()
-	close(producerDone)
-	sourceErr := <-sourceDone
+// watchPublish aborts the publisher when ffmpeg has been blocked on a write
+// for longer than the stall timeout, which means the sink stopped consuming
+// the stream. The resulting publisher error makes the pipeline end instead of
+// leaving decoding stalled behind a dead socket.
+func (p *ffmpegPipeline) watchPublish(run *pipelineRun) {
+	interval := p.publishStallTimeout / 4
+	if interval > publishStallCheckInterval {
+		interval = publishStallCheckInterval
+	}
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-run.stopWatch:
+			return
+		case <-ticker.C:
+			blocked := run.writer.blockedFor()
+			if blocked < p.publishStallTimeout {
+				continue
+			}
+			run.writer.markStalled(blocked)
+			p.logger.Error("downstream sink stopped consuming the stream", "blocked_for", blocked)
+			run.cancelPublish()
+			return
+		}
+	}
+}
+
+func (p *ffmpegPipeline) collectWait(run *pipelineRun) {
+	processErr := run.cmd.Wait()
+	run.stderr.Flush()
+	_ = run.stdout.Close()
+	close(run.producerDone)
+	sourceErr := <-run.sourceDone
+	close(run.stopWatch)
+	run.cancelPublish()
 
 	var err error
 	switch {
 	case processErr != nil && sourceErr != nil:
 		err = errors.Join(
-			formatProcessError(processErr, stderr.tail.String()),
-			fmt.Errorf("publish Ogg stream to Icecast: %w", sourceErr),
+			formatProcessError(processErr, run.stderr.tail.String()),
+			formatPublishError(run.writer, sourceErr),
 		)
 	case processErr != nil:
-		err = formatProcessError(processErr, stderr.tail.String())
+		err = formatProcessError(processErr, run.stderr.tail.String())
 	case sourceErr != nil:
-		err = fmt.Errorf("publish Ogg stream to Icecast: %w", sourceErr)
+		err = formatPublishError(run.writer, sourceErr)
 	}
 	if err != nil {
-		p.logger.Error("ffmpeg pipeline exited", "pid", cmd.Process.Pid, "error", err)
+		p.logger.Error("ffmpeg pipeline exited", "pid", run.cmd.Process.Pid, "error", err)
 	} else {
-		p.logger.Info("ffmpeg pipeline exited", "pid", cmd.Process.Pid)
+		p.logger.Info("ffmpeg pipeline exited", "pid", run.cmd.Process.Pid)
 	}
 
 	p.mu.Lock()
@@ -308,6 +398,14 @@ func buildFFmpegArgs(spec Spec) []string {
 		"-hide_banner",
 		"-nostdin",
 		"-loglevel", "warning",
+		// Input network options. ffmpeg applies these to the input protocol;
+		// rw_timeout additionally reaches every HLS playlist and segment
+		// request, while the reconnect options are best effort.
+		"-rw_timeout", strconv.FormatInt(int64(inputStallTimeout/time.Microsecond), 10),
+		"-reconnect", "1",
+		"-reconnect_streamed", "1",
+		"-reconnect_delay_max", strconv.Itoa(int(inputReconnectDelayMax / time.Second)),
+		"-seg_max_retry", strconv.Itoa(segmentMaxRetry),
 		"-i", spec.Input,
 		"-map", "0:a:0",
 		"-vn",
@@ -320,6 +418,16 @@ func buildFFmpegArgs(spec Spec) []string {
 		"-f", "ogg",
 		"pipe:1",
 	}
+}
+
+// formatPublishError describes a publisher failure, making the difference
+// between a sink that rejected the stream and a sink that silently stopped
+// reading it visible in logs and in the restart reason.
+func formatPublishError(writer *watchWriter, err error) error {
+	if stalled := writer.stalledFor(); stalled > 0 {
+		return fmt.Errorf("publish Ogg stream to Icecast: sink stalled for %s: %w", stalled.Round(time.Millisecond), err)
+	}
+	return fmt.Errorf("publish Ogg stream to Icecast: %w", err)
 }
 
 func formatProcessError(processErr error, stderr string) error {
@@ -353,6 +461,52 @@ func isPermanentFFmpegError(stderr string) bool {
 		}
 	}
 	return false
+}
+
+// watchWriter sits between ffmpeg's stdout and the publisher. It records when
+// a write is in flight so the pipeline can distinguish an idle encoder from a
+// sink that stopped reading: with an unbuffered pipe a blocked write means
+// ffmpeg has stopped reading its upstream input as well.
+type watchWriter struct {
+	writer io.Writer
+
+	mu            sync.Mutex
+	pendingSince  time.Time
+	stallDuration time.Duration
+}
+
+func (w *watchWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	w.pendingSince = time.Now()
+	w.mu.Unlock()
+
+	n, err := w.writer.Write(data)
+
+	w.mu.Lock()
+	w.pendingSince = time.Time{}
+	w.mu.Unlock()
+	return n, err
+}
+
+func (w *watchWriter) blockedFor() time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.pendingSince.IsZero() {
+		return 0
+	}
+	return time.Since(w.pendingSince)
+}
+
+func (w *watchWriter) markStalled(blocked time.Duration) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.stallDuration = blocked
+}
+
+func (w *watchWriter) stalledFor() time.Duration {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.stallDuration
 }
 
 type processStderr struct {

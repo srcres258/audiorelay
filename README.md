@@ -12,8 +12,13 @@ upstream HTTP 4xx that prevents opening the input, stop instead of retrying.
 Structured logs are emitted to stderr and can be filtered with `-log-level`.
 
 Known gaps: listeners are disconnected whenever the pipeline restarts and
-players such as VLC for Android do not reconnect automatically; upstream
-errors that only appear as ffmpeg stderr text are classified conservatively.
+players such as VLC for Android do not reconnect automatically. A brief
+connection-level upstream outage still terminates ffmpeg: its HLS demuxer
+has no retry for a failed playlist reload and does not receive the HTTP
+reconnect options for the playlist and segment requests it opens itself, so
+the relay can only shorten the resulting mount gap by restarting quickly.
+Upstream errors that only appear as ffmpeg stderr text are classified
+conservatively.
 
 ## Design target
 
@@ -126,9 +131,12 @@ Git checkout.
 3. ~~NixOS service module (`nix/module.nix`), evaluated by `nix flake
    check`, and CI end-to-end checks.~~
 4. Per-architecture verification for `riscv64-linux` and `loongarch64-linux`.
-5. Listener continuity across pipeline restarts (client reconnect or silence
+5. Upstream network decoupling: Go-side playlist and segment fetching with
+   retry and a rolling segment cache, replayed to ffmpeg from a local
+   endpoint, so a brief upstream outage no longer ends the pipeline.
+6. Listener continuity across pipeline restarts (client reconnect or silence
    fill), plus health/metrics visibility.
-6. Optional: in-process media backend, native HTTP broadcast sink, multi-channel.
+7. Optional: in-process media backend, native HTTP broadcast sink, multi-channel.
 
 ## License
 

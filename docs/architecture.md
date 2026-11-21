@@ -97,12 +97,62 @@ rather than in ffmpeg's process arguments. The backend keeps the last 64 KiB
 of stderr for process error reporting, sends an interrupt for normal shutdown,
 and falls back to killing the process when the stop context expires.
 
+#### Upstream network options
+
+Input options are passed before `-i`:
+
+| Option | Value | Purpose |
+|---|---|---|
+| `-rw_timeout` | 10 s | bound connect and read stalls on every upstream request |
+| `-reconnect`, `-reconnect_streamed` | 1 | best-effort protocol-level reconnect |
+| `-reconnect_delay_max` | 4 s | cap that reconnect delay |
+| `-seg_max_retry` | 3 | re-fetch a segment instead of skipping it |
+
+`rw_timeout` is the load-bearing option. ffmpeg's HLS demuxer forwards only
+`headers`, `user_agent`, `cookies`, `http_proxy`, `referer`, `rw_timeout`,
+`icy` and `prefer_libcurl` from the input AVIO to the playlist and segment
+requests it opens itself (`libavformat/aviobuf.c: ffio_copy_url_options`).
+The `reconnect*` options are **not** in that list, so they only affect the
+connection ffmpeg already owns and are best effort at most.
+
+Two consequences shape the remaining gaps:
+
+- A failed playlist reload (`Failed to reload playlist`) is fatal in
+  `hls.c: reload_playlist()`; there is no retry and no option to enable one.
+  A short upstream outage therefore still ends the ffmpeg process.
+- `seg_max_retry` only helps segment opens, where the ffmpeg default of 0
+  skips the segment on the first error and leaves an audible gap.
+
+Removing this limitation requires fetching upstream media outside ffmpeg
+(planned: a Go fetch layer with playlist parsing, parallel segment prefetch,
+retry and a rolling segment cache, replayed to ffmpeg from a local HTTP
+endpoint).
+
+#### Downstream watchdog
+
+ffmpeg's Ogg stdout is an unbuffered pipe into the Icecast upload. A sink that
+stops consuming therefore stops ffmpeg from reading its input, which silently
+stalls decoding. The backend watches in-flight writes and cancels the upload
+when ffmpeg has been blocked for 15 s, so the pipeline ends and the relay
+restarts it instead of leaving a zombie behind a dead socket. The Icecast
+client bounds dialing and the source handshake with a 10 s timeout and enables
+TCP keepalive with a 30 s period.
+
 ### relay contract
 
 `Run(ctx)` owns the restart loop: map `Config` → `pipeline.Spec`, start, wait,
 and retry transient failures with capped exponential backoff. The production
-defaults are a 1-second initial delay, a 30-second maximum delay, a 30-second
-healthy-run reset period, and a 5-second stop timeout. Permanent pipeline failures, such as invalid Icecast credentials or an
+defaults are a 1-second initial delay, a 2-second maximum delay, a 10-second
+healthy-run reset period, and a 5-second stop timeout. Both the cap and the
+reset period are deliberately short: every restart tears down the Icecast
+source connection, so the mount disappears for the length of the backoff and
+new listeners receive 404 until the source is back. A local fault-injection
+run (live HLS origin, 8 s upstream outage, listener polled every 300 ms) left
+the mount unreachable for 14.7 s with a 30 s cap versus 8.8 s with a 2 s cap,
+so the cap and not the outage itself dominated the visible gap. A pipeline
+that survived for 10 seconds is treated as healthy again, which stops repeated
+short failures from escalating the gap. Permanent pipeline
+failures, such as invalid Icecast credentials or an
 upstream HTTP 4xx that prevents ffmpeg from opening the configured input, are
 returned immediately instead of retried. Later HLS segment 404s remain
 transient because live playlists can briefly reference unavailable segments.
